@@ -1,6 +1,8 @@
 ﻿using Autodesk.AutoCAD.Colors;
 using System;
 using System.Windows.Media;
+using CadColor = Autodesk.AutoCAD.Colors.Color; // 为 CAD 颜色设置别名
+using WpfColor = System.Windows.Media.Color;    // 为 WPF 颜色设置别名
 
 namespace Plugin_AnalysisMaster.Models
 {
@@ -35,7 +37,7 @@ namespace Plugin_AnalysisMaster.Models
     {
         // --- 基础属性 ---
         public string Name { get; set; }                // 样式名称（如：深蓝动线）
-        public Color MainColor { get; set; }           // 主色调 (RGB)
+        public System.Windows.Media.Color MainColor { get; set; }           // 主色调 (RGB)
         public double LineWeight { get; set; }          // 线宽
 
         // --- 几何特征 ---

@@ -1,9 +1,9 @@
-﻿using System;
-using System.Collections.Generic;
+﻿using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.Geometry;
-using Autodesk.AutoCAD.ApplicationServices;
 using Plugin_AnalysisMaster.Models;
+using System;
+using System.Collections.Generic;
 
 namespace Plugin_AnalysisMaster.Services
 {
@@ -18,51 +18,53 @@ namespace Plugin_AnalysisMaster.Services
         public static void DrawAnalysisLine(Point3d startPt, Point3d endPt, AnalysisStyle style)
         {
             Document doc = Application.DocumentManager.MdiActiveDocument;
-            Database db = doc.Database;
+            if (doc == null) return;
 
-            using (Transaction tr = db.TransactionManager.StartTransaction())
+            // ✨ 核心修复：在非模态窗口中修改数据库，必须显式锁定文档
+            using (DocumentLock dl = doc.LockDocument())
             {
-                BlockTable bt = tr.GetObject(db.BlockTableId, OpenMode.ForRead) as BlockTable;
-                BlockTableRecord btr = tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite) as BlockTableRecord;
-
-                // 1. 计算方向向量
-                Vector3d dir = endPt - startPt;
-                if (dir.Length < 1e-6) return; // 长度太短不处理
-                Vector3d unitDir = dir.GetNormal();
-                Vector3d normal = unitDir.GetPerpendicularVector(); // 垂直向量，用于计算宽度
-
-                // 2. 根据类型生成不同的顶点
-                Point3dCollection pts = new Point3dCollection();
-
-                if (style.HeadType == ArrowHeadType.SwallowTail)
+                Database db = doc.Database;
+                using (Transaction tr = db.TransactionManager.StartTransaction())
                 {
-                    pts = GetSwallowTailPoints(startPt, endPt, unitDir, normal, style);
-                }
-                else
-                {
-                    // 这里后续可以扩展普通三角形箭头等
-                    pts = GetBasicArrowPoints(startPt, endPt, unitDir, normal, style);
-                }
+                    BlockTable bt = tr.GetObject(db.BlockTableId, OpenMode.ForRead) as BlockTable;
+                    // 之前的报错就发生在这里的 OpenMode.ForWrite
+                    BlockTableRecord btr = tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite) as BlockTableRecord;
 
-                // 3. 创建多段线并填充
-                using (Polyline pl = new Polyline())
-                {
-                    for (int i = 0; i < pts.Count; i++)
+                    // ... 后续逻辑保持不变 ...
+                    Vector3d dir = endPt - startPt;
+                    if (dir.Length < 1e-6) return;
+                    Vector3d unitDir = dir.GetNormal();
+                    Vector3d normal = unitDir.GetPerpendicularVector();
+
+                    Point3dCollection pts = new Point3dCollection();
+                    if (style.HeadType == ArrowHeadType.SwallowTail)
                     {
-                        pl.AddVertexAt(i, new Point2d(pts[i].X, pts[i].Y), 0, 0, 0);
+                        pts = GetSwallowTailPoints(startPt, endPt, unitDir, normal, style);
                     }
-                    pl.Closed = true;
-                    pl.Color = Autodesk.AutoCAD.Colors.Color.FromRgb(style.MainColor.R, style.MainColor.G, style.MainColor.B);
+                    else
+                    {
+                        pts = GetBasicArrowPoints(startPt, endPt, unitDir, normal, style);
+                    }
 
-                    btr.AppendEntity(pl);
-                    tr.AddNewlyCreatedDBObject(pl, true);
+                    using (Polyline pl = new Polyline())
+                    {
+                        for (int i = 0; i < pts.Count; i++)
+                        {
+                            pl.AddVertexAt(i, new Point2d(pts[i].X, pts[i].Y), 0, 0, 0);
+                        }
+                        pl.Closed = true;
+                        // 注意这里使用的 Color 已经在 AnalysisStyle 中修复为 WPF 类型
+                        pl.Color = Autodesk.AutoCAD.Colors.Color.FromRgb(style.MainColor.R, style.MainColor.G, style.MainColor.B);
 
-                    // 如果需要实心填充
-                    CreateSolidHatch(btr, tr, pl, style);
+                        btr.AppendEntity(pl);
+                        tr.AddNewlyCreatedDBObject(pl, true);
+
+                        CreateSolidHatch(btr, tr, pl, style);
+                    }
+
+                    tr.Commit();
                 }
-
-                tr.Commit();
-            }
+            } // 文档锁在这里自动释放
         }
 
         /// <summary>
@@ -100,9 +102,13 @@ namespace Plugin_AnalysisMaster.Services
                 btr.AppendEntity(hatch);
                 tr.AddNewlyCreatedDBObject(hatch, true);
 
-                hatch.SetHatchPattern(HatchPatternType.Predefined, "SOLID");
+                // ✨ 修正 1：PreDefined 的 D 需要大写
+                hatch.SetHatchPattern(HatchPatternType.PreDefined, "SOLID");
+
                 hatch.Color = boundary.Color;
-                hatch.Transparency = new Autodesk.AutoCAD.Colors.Transparency(style.Transparency);
+
+                // ✨ 修正 2：将 double 显式转换为 byte
+                hatch.Transparency = new Autodesk.AutoCAD.Colors.Transparency((byte)style.Transparency);
 
                 ObjectIdCollection ids = new ObjectIdCollection();
                 ids.Add(boundary.ObjectId);
