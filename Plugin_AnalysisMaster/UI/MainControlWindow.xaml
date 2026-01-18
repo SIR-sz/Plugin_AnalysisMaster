@@ -1,0 +1,32 @@
+﻿<Window x:Class="Plugin_AnalysisMaster.UI.MainControlWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="动线分析专家" Height="450" Width="300"
+        WindowStyle="ToolWindow" Topmost="True" Background="#F3F3F3">
+    <Grid Margin="10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Text="选择分析线样式" FontSize="16" FontWeight="Bold" Margin="0,0,0,10"/>
+
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+            <StackPanel>
+                <Button Content="燕尾动线 (深蓝)" Click="StyleButton_Click" Tag="Swallow_Blue" Height="60" Margin="0,5" Background="#2C3E50" Foreground="White"/>
+                <Button Content="流向箭头 (浅蓝)" Click="StyleButton_Click" Tag="Basic_LightBlue" Height="60" Margin="0,5" Background="#3498DB" Foreground="White"/>
+                <Button Content="警告/冲突线 (橙红)" Click="StyleButton_Click" Tag="Basic_Red" Height="60" Margin="0,5" Background="#E67E22" Foreground="White"/>
+            </StackPanel>
+        </ScrollViewer>
+
+        <StackPanel Grid.Row="2" Margin="0,10,0,0">
+            <Separator Margin="0,5"/>
+            <DockPanel Margin="0,5">
+                <TextBlock Text="箭头大小: " VerticalAlignment="Center"/>
+                <Slider Name="SizeSlider" Minimum="0.5" Maximum="10" Value="2.0" TickFrequency="0.5" IsSnapToTickEnabled="True"/>
+            </DockPanel>
+            <TextBlock Text="提示：点击上方样式后在 CAD 屏幕点击两点绘制。" FontSize="11" Foreground="Gray" TextWrapping="Wrap"/>
+        </StackPanel>
+    </Grid>
+</Window>
