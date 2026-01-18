@@ -1,43 +1,106 @@
 ﻿<Window x:Class="Plugin_AnalysisMaster.UI.MainControlWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="动线分析专家" Height="450" Width="300"
-        WindowStyle="ToolWindow" Topmost="True" Background="#F3F3F3">
-    <Grid Margin="10">
+        Title="动线分析专家 PRO" Height="680" Width="380"
+        WindowStyle="None" AllowsTransparency="False" ResizeMode="NoResize"
+        Background="#2D2D2D" Foreground="#E0E0E0" Topmost="True">
+
+    <Window.Resources>
+        <Style TargetType="Slider">
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="Margin" Value="0,5"/>
+        </Style>
+        <Style x:Key="SectionHeader" TargetType="TextBlock">
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="Foreground" Value="#3498DB"/>
+            <Setter Property="Margin" Value="0,15,0,8"/>
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="15">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="100"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <TextBlock Grid.Row="0" Text="选择分析线样式" FontSize="16" FontWeight="Bold" Margin="0,0,0,10"/>
+        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,15">
+            <Rectangle Width="4" Height="20" Fill="#3498DB" Margin="0,0,10,0"/>
+            <TextBlock Text="PARAMETRIC ANALYSIS" FontSize="16" FontWeight="ExtraBold" VerticalAlignment="Center"/>
+        </StackPanel>
 
-        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+        <Border Grid.Row="1" Background="#1A1A1A" CornerRadius="6" BorderBrush="#444" BorderThickness="1">
+            <Grid>
+                <Canvas Name="PreviewCanvas" Width="300" Height="80" HorizontalAlignment="Center" VerticalAlignment="Center">
+                </Canvas>
+                <TextBlock Text="实时预览" Foreground="#666" FontSize="10" Margin="10,5" HorizontalAlignment="Left" VerticalAlignment="Top"/>
+            </Grid>
+        </Border>
+
+        <ScrollViewer Grid.Row="2" Margin="0,10,0,0" VerticalScrollBarVisibility="Hidden">
             <StackPanel>
-                <Button Content="燕尾动线 (深蓝)" Click="StyleButton_Click" Tag="Swallow_Blue" 
-                        Height="60" Margin="0,5" Background="#2C3E50" Foreground="White"/>
-                <Button Content="流向箭头 (浅蓝)" Click="StyleButton_Click" Tag="Basic_LightBlue" 
-                        Height="60" Margin="0,5" Background="#3498DB" Foreground="White"/>
-                <Button Content="警告/冲突线 (橙红)" Click="StyleButton_Click" Tag="Basic_Red" 
-                        Height="60" Margin="0,5" Background="#E67E22" Foreground="White"/>
+                <TextBlock Text="组合逻辑 (Composition)" Style="{StaticResource SectionHeader}"/>
+
+                <TextBlock Text="起点端头 (Start Cap)" Foreground="#AAA" FontSize="11"/>
+                <ComboBox Name="StartCapCombo" Margin="0,5" SelectionChanged="OnParamChanged">
+                    <ComboBoxItem Content="None (平齐)"/>
+                    <ComboBoxItem Content="Circle (圆点)"/>
+                    <ComboBoxItem Content="Swallow (逆向燕尾)"/>
+                </ComboBox>
+
+                <TextBlock Text="路径样式 (Segment)" Foreground="#AAA" FontSize="11" Margin="0,8,0,0"/>
+                <ComboBox Name="SegmentStyleCombo" Margin="0,5" SelectionChanged="OnParamChanged">
+                    <ComboBoxItem Content="Solid (实线)"/>
+                    <ComboBoxItem Content="Tapered (渐细线)"/>
+                    <ComboBoxItem Content="Dashed (虚线)"/>
+                </ComboBox>
+
+                <TextBlock Text="终点端头 (End Cap)" Foreground="#AAA" FontSize="11" Margin="0,8,0,0"/>
+                <ComboBox Name="EndCapCombo" Margin="0,5" SelectionChanged="OnParamChanged">
+                    <ComboBoxItem Content="Arrow (标准箭头)"/>
+                    <ComboBoxItem Content="Swallow (燕尾箭头)"/>
+                    <ComboBoxItem Content="Stealth (隐形战机)"/>
+                </ComboBox>
+
+                <TextBlock Text="参数微调 (Refinement)" Style="{StaticResource SectionHeader}"/>
+
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Margin="0,0,5,0">
+                        <TextBlock Text="端头尺寸" Foreground="#AAA" FontSize="11"/>
+                        <Slider Name="SizeSlider" Minimum="1" Maximum="30" Value="8" ValueChanged="OnParamChanged"/>
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" Margin="5,0,0,0">
+                        <TextBlock Text="线段粗细" Foreground="#AAA" FontSize="11"/>
+                        <Slider Name="WeightSlider" Minimum="0.1" Maximum="5" Value="0.8" ValueChanged="OnParamChanged"/>
+                    </StackPanel>
+                </Grid>
+
+                <TextBlock Text="颜色选择" Foreground="#AAA" FontSize="11" Margin="0,10,0,5"/>
+                <UniformGrid Columns="5" Name="ColorGrid">
+                    <Button Background="#E74C3C" Height="25" Margin="2" Click="Color_Click"/>
+                    <Button Background="#3498DB" Height="25" Margin="2" Click="Color_Click"/>
+                    <Button Background="#2ECC71" Height="25" Margin="2" Click="Color_Click"/>
+                    <Button Background="#F1C40F" Height="25" Margin="2" Click="Color_Click"/>
+                    <Button Background="#9B59B6" Height="25" Margin="2" Click="Color_Click"/>
+                </UniformGrid>
             </StackPanel>
         </ScrollViewer>
 
-        <StackPanel Grid.Row="2" Margin="0,10,0,0">
-            <Separator Margin="0,5"/>
-
-            <DockPanel Margin="0,5">
-                <TextBlock Text="箭头大小: " VerticalAlignment="Center"/>
-                <Slider Name="SizeSlider" Minimum="0.5" Maximum="10" Value="2.0" 
-                        TickFrequency="0.5" IsSnapToTickEnabled="True"/>
-            </DockPanel>
-
-            <CheckBox Name="CurveCheckBox" Content="使用曲线动线" Margin="0,5" 
-                      IsChecked="True" VerticalAlignment="Center"/>
-
-            <TextBlock Text="提示：点击上方样式后在 CAD 屏幕点击两点绘制。" 
-                       FontSize="11" Foreground="Gray" TextWrapping="Wrap" Margin="0,5,0,0"/>
+        <StackPanel Grid.Row="3" Margin="0,20,0,0">
+            <Button Content="PLACE ANALYSIS LINE" Height="45" Background="#3498DB" Foreground="White" 
+                    FontWeight="Bold" BorderThickness="0" Click="StartDraw_Click">
+                <Button.Resources>
+                    <Style TargetType="Border">
+                        <Setter Property="CornerRadius" Value="4"/>
+                    </Style>
+                </Button.Resources>
+            </Button>
+            <Button Content="关闭" Background="Transparent" Foreground="#666" BorderThickness="0" Margin="0,10,0,0" Click="Close_Click"/>
         </StackPanel>
-
     </Grid>
 </Window>

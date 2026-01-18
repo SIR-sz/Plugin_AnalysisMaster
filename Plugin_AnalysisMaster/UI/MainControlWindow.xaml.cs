@@ -1,104 +1,177 @@
-﻿using Autodesk.AutoCAD.ApplicationServices;
-using Autodesk.AutoCAD.EditorInput;
-using Autodesk.AutoCAD.Geometry;
+﻿using Autodesk.AutoCAD.EditorInput;
 using Plugin_AnalysisMaster.Models;
 using Plugin_AnalysisMaster.Services;
 using System;
 using System.Windows;
-
+using System.Windows.Controls;
+using System.Windows.Media;
+using System.Windows.Shapes;
+using AcApp = Autodesk.AutoCAD.ApplicationServices.Application;
 
 namespace Plugin_AnalysisMaster.UI
 {
     public partial class MainControlWindow : Window
     {
-        // 单例模式，防止重复打开窗口
+        private AnalysisStyle _currentStyle = new AnalysisStyle();
         private static MainControlWindow _instance;
+
+        public static void ShowTool()
+        {
+            if (_instance == null || !_instance.IsLoaded)
+            {
+                _instance = new MainControlWindow();
+                AcApp.ShowModelessWindow(_instance);
+            }
+            else { _instance.Activate(); }
+        }
 
         public MainControlWindow()
         {
             InitializeComponent();
+            // 初始设置
+            StartCapCombo.SelectedIndex = 0;
+            SegmentStyleCombo.SelectedIndex = 0;
+            EndCapCombo.SelectedIndex = 0;
+            UpdatePreview();
         }
 
-        /// <summary>
-        /// 供 MainTool 调用的静态启动方法
-        /// </summary>
-        public static void ShowTool()
+        // ✨ 核心方法：参数改变触发预览更新
+        // ✨ 增加加载状态检查，彻底解决初始化崩溃问题
+        private void OnParamChanged(object sender, EventArgs e)
         {
-            if (_instance == null)
+            // 关键：如果窗口还没加载完成，不要执行逻辑
+            if (!this.IsLoaded) return;
+
+            SyncStyleFromUI();
+            UpdatePreview();
+        }
+
+        private void Color_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is Button btn)
             {
-                _instance = new MainControlWindow();
-                _instance.Closed += (s, e) => _instance = null;
-                Autodesk.AutoCAD.ApplicationServices.Application.ShowModelessWindow(_instance);
+                _currentStyle.MainColor = ((SolidColorBrush)btn.Background).Color;
+                UpdatePreview();
             }
-            else
+        }
+
+        // ✨ 商业化预览逻辑：在 Canvas 上模拟绘制动线
+        // ✨ 商业级实时预览逻辑：完整模拟[起点+中间+终点]的组合效果
+        private void UpdatePreview()
+        {
+            if (PreviewCanvas == null) return;
+            PreviewCanvas.Children.Clear();
+
+            var brush = new SolidColorBrush(_currentStyle.MainColor);
+            double centerY = PreviewCanvas.Height / 2;
+            double startX = 50;
+            double endX = 250;
+            double s = _currentStyle.ArrowSize;
+
+            // 1. 绘制中间路径 (根据 StartWidth 和 EndWidth 模拟渐变效果)
+            // 预览中使用多边形来模拟带有宽度的路径
+            Polygon body = new Polygon { Fill = brush, Opacity = 0.8 };
+            double w1 = _currentStyle.StartWidth * 5; // 放大预览比例
+            double w2 = _currentStyle.EndWidth * 5;
+
+            body.Points.Add(new Point(startX, centerY - w1));
+            body.Points.Add(new Point(endX, centerY - w2));
+            body.Points.Add(new Point(endX, centerY + w2));
+            body.Points.Add(new Point(startX, centerY + w1));
+            PreviewCanvas.Children.Add(body);
+
+            // 2. 绘制起点端头 (根据 StartCapStyle)
+            if (_currentStyle.StartCapStyle == ArrowHeadType.Circle)
             {
-                _instance.Focus();
+                Ellipse dot = new Ellipse { Fill = brush, Width = s, Height = s };
+                Canvas.SetLeft(dot, startX - s / 2);
+                Canvas.SetTop(dot, centerY - s / 2);
+                PreviewCanvas.Children.Add(dot);
             }
-        }
 
-        private void StyleButton_Click(object sender, RoutedEventArgs e)
-        {
-            var btn = sender as System.Windows.Controls.Button;
-            if (btn == null) return;
-
-            AnalysisStyle selectedStyle = new AnalysisStyle
+            // 3. 绘制终点端头 (根据 EndCapStyle)
+            if (_currentStyle.EndCapStyle != ArrowHeadType.None)
             {
-                ArrowSize = SizeSlider.Value,
-                MainColor = ((System.Windows.Media.SolidColorBrush)btn.Background).Color,
-                // ✨ 读取 UI 上的曲线开关状态
-                IsCurved = CurveCheckBox.IsChecked ?? false,
-                LineWeight = 0.30 // 默认中等线宽
-            };
-
-            if (btn.Tag.ToString().Contains("Swallow"))
-                selectedStyle.HeadType = ArrowHeadType.SwallowTail;
-            else
-                selectedStyle.HeadType = ArrowHeadType.Basic;
-
-            DrawLineInCad(selectedStyle);
-        }
-
-        private void DrawLineInCad(AnalysisStyle style)
-        {
-            Document doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
-            Editor ed = doc.Editor;
-            this.Hide();
-
-            try
-            {
-                // 1. 获取起始点
-                PromptPointResult ppr = ed.GetPoint("\n请选择动线起点: ");
-                if (ppr.Status != PromptStatus.OK) return;
-
-                // 2. 初始化 Jig
-                AnalysisLineJig jig = new AnalysisLineJig(ppr.Value, style);
-
-                // 3. 循环交互
-                while (true)
+                Polygon head = new Polygon { Fill = brush };
+                if (_currentStyle.EndCapStyle == ArrowHeadType.SwallowTail)
                 {
-                    PromptResult res = ed.Drag(jig);
+                    // 燕尾预览算法
+                    head.Points.Add(new Point(endX + s, centerY));
+                    head.Points.Add(new Point(endX, centerY - s / 2));
+                    head.Points.Add(new Point(endX + s * 0.4, centerY));
+                    head.Points.Add(new Point(endX, centerY + s / 2));
+                }
+                else // 标准三角形
+                {
+                    head.Points.Add(new Point(endX + s, centerY));
+                    head.Points.Add(new Point(endX, centerY - s * 0.4));
+                    head.Points.Add(new Point(endX, centerY + s * 0.4));
+                }
+                PreviewCanvas.Children.Add(head);
+            }
+        }
 
-                    if (res.Status == PromptStatus.OK)
-                    {
-                        // 关键：将采样到的临时点正式加入点集
-                        // 这里直接使用您在 Jig 中采样的结果
-                        // 假设您在 Jig 类中暴露了最后采样点的属性：jig.LastPoint
-                        jig.GetPoints().Add(jig.LastPoint);
-                    }
-                    else if (res.Status == PromptStatus.None) // 回车结束
-                    {
-                        if (jig.GetPoints().Count >= 2)
-                            GeometryEngine.DrawAnalysisLine(jig.GetPoints(), style);
-                        break;
-                    }
-                    else break;
+        // ✨ 修复 NullReferenceException 并实现三段式参数同步
+        private void SyncStyleFromUI()
+        {
+            // 1. 确保样式对象已实例化
+            if (_currentStyle == null) _currentStyle = new AnalysisStyle();
+
+            // 2. 安全检查：如果控件尚未加载，直接返回，避免初始化时的空引用崩溃
+            if (SizeSlider == null || WeightSlider == null || StartCapCombo == null || EndCapCombo == null)
+                return;
+
+            // 3. 同步几何参数
+            _currentStyle.ArrowSize = SizeSlider.Value;
+            _currentStyle.LineWeight = WeightSlider.Value;
+
+            // 4. 实现解构逻辑：独立获取起点和终点的端头样式
+            // 映射 ComboBox 的索引到枚举
+            if (StartCapCombo.SelectedIndex != -1)
+                _currentStyle.StartCapStyle = (ArrowHeadType)StartCapCombo.SelectedIndex;
+
+            if (EndCapCombo.SelectedIndex != -1)
+                _currentStyle.EndCapStyle = (ArrowHeadType)EndCapCombo.SelectedIndex;
+
+            // 5. 路径样式处理
+            if (SegmentStyleCombo != null && SegmentStyleCombo.SelectedIndex != -1)
+            {
+                _currentStyle.LineType = (LineStyleType)SegmentStyleCombo.SelectedIndex;
+                // 如果是“渐细线”，设置不同的前后宽度
+                if (SegmentStyleCombo.SelectedIndex == 1) // 假设索引1是渐细线
+                {
+                    _currentStyle.StartWidth = _currentStyle.LineWeight * 1.5;
+                    _currentStyle.EndWidth = _currentStyle.LineWeight * 0.5;
+                }
+                else
+                {
+                    _currentStyle.StartWidth = _currentStyle.LineWeight;
+                    _currentStyle.EndWidth = _currentStyle.LineWeight;
                 }
             }
-            finally
-            {
-                this.Show();
-            }
         }
 
+        private void StartDraw_Click(object sender, RoutedEventArgs e)
+        {
+            this.Hide();
+            try
+            {
+                var doc = AcApp.DocumentManager.MdiActiveDocument;
+                var ppr = doc.Editor.GetPoint("\n指定起点: ");
+                if (ppr.Status == PromptStatus.OK)
+                {
+                    AnalysisLineJig jig = new AnalysisLineJig(ppr.Value, _currentStyle);
+                    while (doc.Editor.Drag(jig).Status == PromptStatus.OK)
+                    {
+                        jig.GetPoints().Add(jig.LastPoint);
+                    }
+                    if (jig.GetPoints().Count >= 2)
+                        GeometryEngine.DrawAnalysisLine(jig.GetPoints(), _currentStyle);
+                }
+            }
+            finally { this.Show(); }
+        }
+
+        private void Close_Click(object sender, RoutedEventArgs e) => this.Close();
     }
 }

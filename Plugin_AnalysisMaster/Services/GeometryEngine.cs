@@ -1,154 +1,20 @@
 ﻿using Autodesk.AutoCAD.ApplicationServices;
+using Autodesk.AutoCAD.Colors;
 using Autodesk.AutoCAD.DatabaseServices;
-using Autodesk.AutoCAD.EditorInput;
 using Autodesk.AutoCAD.Geometry;
-using Autodesk.AutoCAD.GraphicsInterface;
 using Plugin_AnalysisMaster.Models;
 using System;
-using System.Collections.Generic;
+// 解决 2015 版本命名空间冲突
 using Polyline = Autodesk.AutoCAD.DatabaseServices.Polyline;
-
-
 
 namespace Plugin_AnalysisMaster.Services
 {
-    public class AnalysisLineJig : DrawJig
-    {
-        private Point3dCollection _pts;    // 已确定的点
-        private Point3d _tempPt;           // 当前鼠标悬停的点
-        private AnalysisStyle _style;      // 样式配置
-        public Point3d LastPoint => _tempPt;
-
-        public AnalysisLineJig(Point3d startPt, AnalysisStyle style)
-        {
-            _pts = new Point3dCollection { startPt };
-            _tempPt = startPt;
-            _style = style;
-        }
-
-        public Point3dCollection GetPoints() => _pts;
-
-        // 核心采样：监听鼠标移动
-        protected override SamplerStatus Sampler(JigPrompts prompts)
-        {
-            JigPromptPointOptions jppo = new JigPromptPointOptions("\n选择下一个控制点 [回车/右键结束]: ");
-            jppo.UserInputControls = UserInputControls.Accept3dCoordinates |
-                                     UserInputControls.NullResponseAccepted |
-                                     UserInputControls.AnyBlankTerminatesInput;
-
-            PromptPointResult ppr = prompts.AcquirePoint(jppo);
-
-            if (ppr.Status == PromptStatus.Cancel) return SamplerStatus.Cancel;
-
-            // 距离太近不刷新，防止抖动
-            if (ppr.Value.DistanceTo(_tempPt) < 0.001)
-                return SamplerStatus.NoChange;
-
-            _tempPt = ppr.Value;
-            return SamplerStatus.OK;
-        }
-
-        // 核心绘图：实时预览线条和箭头
-        protected override bool WorldDraw(WorldDraw draw)
-        {
-            // 构造包含当前鼠标位置的临时点集
-            Point3dCollection previewPoints = new Point3dCollection();
-            foreach (Point3d p in _pts) previewPoints.Add(p);
-            previewPoints.Add(_tempPt);
-
-            if (previewPoints.Count < 2) return true;
-
-            try
-            {
-                // 1. 生成临时路径 (Spline 或 Polyline)
-                Curve path;
-                if (_style.IsCurved && previewPoints.Count > 2)
-                    path = new Spline(previewPoints, 3, 0); //
-                else
-                {
-                    Polyline pl = new Polyline();
-                    for (int i = 0; i < previewPoints.Count; i++)
-                        pl.AddVertexAt(i, new Point2d(previewPoints[i].X, previewPoints[i].Y), 0, 0, 0);
-                    path = pl;
-                }
-
-                using (path)
-                {
-                    double totalLen = path.GetDistanceAtParameter(path.EndParam); //
-                    Vector3d tangent = path.GetFirstDerivative(path.EndParam).GetNormal();
-                    Vector3d normal = tangent.GetPerpendicularVector();
-                    Point3d endPt = path.EndPoint;
-
-                    // 设置预览颜色（使用样式中定义的颜色）
-                    draw.SubEntityTraits.Color = Autodesk.AutoCAD.Colors.Color.FromRgb(
-                        _style.MainColor.R, _style.MainColor.G, _style.MainColor.B).ColorIndex;
-
-                    // 2. 绘制本体线预览（缩短后的，防止重叠）
-                    double arrowSize = _style.ArrowSize;
-                    if (totalLen > arrowSize)
-                    {
-                        double splitParam = path.GetParameterAtDistance(totalLen - arrowSize); //
-                        using (DBObjectCollection curves = path.GetSplitCurves(new DoubleCollection { splitParam }))
-                        {
-                            if (curves.Count > 0)
-                            {
-                                Entity body = (Entity)curves[0];
-                                draw.Geometry.Draw(body);
-                                body.Dispose();
-                            }
-                        }
-                    }
-
-                    // 3. 绘制箭头头部预览
-                    using (Polyline arrowPl = new Polyline())
-                    {
-                        Point3dCollection arrowPts = _style.HeadType == ArrowHeadType.SwallowTail
-                            ? CalculateSwallowTail(endPt, tangent, normal, _style)
-                            : CalculateBasicArrow(endPt, tangent, normal, _style);
-
-                        for (int i = 0; i < arrowPts.Count; i++)
-                            arrowPl.AddVertexAt(i, new Point2d(arrowPts[i].X, arrowPts[i].Y), 0, 0, 0);
-                        arrowPl.Closed = true;
-
-                        draw.Geometry.Draw(arrowPl);
-                    }
-                }
-            }
-            catch { }
-
-            return true;
-        }
-
-        // 内部复用 GeometryEngine 的坐标算法逻辑
-        private Point3dCollection CalculateSwallowTail(Point3d end, Vector3d uDir, Vector3d uNormal, AnalysisStyle style)
-        {
-            double size = style.ArrowSize;
-            double depth = style.ArrowSize * style.SwallowDepth;
-            Point3dCollection pts = new Point3dCollection();
-            pts.Add(end);
-            Point3d backBase = end - (uDir * size);
-            pts.Add(backBase + (uNormal * (size * 0.5)));
-            pts.Add(backBase + (uDir * depth));
-            pts.Add(backBase - (uNormal * (size * 0.5)));
-            return pts;
-        }
-
-        private Point3dCollection CalculateBasicArrow(Point3d end, Vector3d uDir, Vector3d uNormal, AnalysisStyle style)
-        {
-            double size = style.ArrowSize;
-            Point3dCollection pts = new Point3dCollection();
-            pts.Add(end);
-            Point3d backBase = end - (uDir * size);
-            pts.Add(backBase + (uNormal * (size * 0.4)));
-            pts.Add(backBase - (uNormal * (size * 0.4)));
-            return pts;
-        }
-    }
-    public class GeometryEngine
+    public static class GeometryEngine
     {
         /// <summary>
-        /// 绘制分析线的核心方法
+        /// 核心入口：参数化生成动线
         /// </summary>
+        // ✨ 替换 DrawAnalysisLine：实现头、尾、路径的完全解构
         public static void DrawAnalysisLine(Point3dCollection points, AnalysisStyle style)
         {
             if (points == null || points.Count < 2) return;
@@ -162,146 +28,200 @@ namespace Plugin_AnalysisMaster.Services
                     EnsureLayer(db, tr, style);
                     BlockTableRecord btr = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
 
-                    // 1. 创建路径曲线
-                    Curve mainPath;
-                    if (style.IsCurved && points.Count > 2)
+                    Curve path = CreatePathCurve(points, style.IsCurved);
+                    using (path)
                     {
-                        // 使用样条曲线实现平滑多点路径
-                        mainPath = new Spline(points, 3, 0);
-                    }
-                    else
-                    {
-                        Polyline pl = new Polyline();
-                        for (int i = 0; i < points.Count; i++)
-                            pl.AddVertexAt(i, new Point2d(points[i].X, points[i].Y), 0, 0, 0);
-                        mainPath = pl;
-                    }
+                        // 获取切线方向
+                        Vector3d headDir = path.GetFirstDerivative(path.EndParam).GetNormal();
+                        Vector3d tailDir = path.GetFirstDerivative(path.StartParam).GetNormal().Negate();
 
-                    using (mainPath)
-                    {
-                        // 2. 获取参数和切线
-                        double endParam = mainPath.EndParam;
+                        // 计算头尾顶点（现在独立受 StartCapStyle 和 EndCapStyle 控制）
+                        Point3dCollection headPts = CalculateFeaturePoints(path.EndPoint, headDir, style, true);
+                        Point3dCollection tailPts = CalculateFeaturePoints(path.StartPoint, tailDir, style, false);
 
-                        // ✨ 修正：AutoCAD 2015 中使用全称方法名
-                        double totalDist = mainPath.GetDistanceAtParameter(endParam);
-                        Vector3d tangent = mainPath.GetFirstDerivative(endParam).GetNormal();
-                        Vector3d normal = tangent.GetPerpendicularVector();
-                        Point3d endPt = mainPath.EndPoint;
+                        // 物理缩进逻辑
+                        double headIndent = (style.EndCapStyle == ArrowHeadType.None) ? 0 : style.ArrowSize;
+                        double tailIndent = (style.StartCapStyle == ArrowHeadType.None) ? 0 : style.ArrowSize * 0.5;
 
-                        // 3. 绘制动线本体（自动缩短以留出箭头空间）
-                        double arrowSize = style.ArrowSize;
-                        if (totalDist > arrowSize)
-                        {
-                            double splitDist = totalDist - arrowSize;
-                            // ✨ 修正：AutoCAD 2015 中使用全称方法名
-                            double splitParam = mainPath.GetParameterAtDistance(splitDist);
+                        Curve bodyCurve = TrimPath(path, headIndent, tailIndent);
+                        if (bodyCurve != null) RenderBody(btr, tr, bodyCurve, style);
 
-                            using (DBObjectCollection subCurves = mainPath.GetSplitCurves(new DoubleCollection { splitParam }))
-                            {
-                                if (subCurves.Count > 0)
-                                {
-                                    Curve body = subCurves[0] as Curve;
-                                    body.Layer = style.TargetLayer;
-                                    body.Color = Autodesk.AutoCAD.Colors.Color.FromRgb(style.MainColor.R, style.MainColor.G, style.MainColor.B);
-                                    body.LineWeight = MapLineWeight(style.LineWeight);
-
-                                    btr.AppendEntity(body);
-                                    tr.AddNewlyCreatedDBObject(body, true);
-                                }
-                            }
-                        }
-
-                        // 4. 绘制箭头（基于切线方向计算，确保与曲线末端精准对齐）
-                        Point3dCollection arrowPts = style.HeadType == ArrowHeadType.SwallowTail
-                            ? GetSwallowTailPoints(Point3d.Origin, endPt, tangent, normal, style)
-                            : GetBasicArrowPoints(Point3d.Origin, endPt, tangent, normal, style);
-
-                        using (Polyline headPl = new Polyline())
-                        {
-                            for (int i = 0; i < arrowPts.Count; i++)
-                                headPl.AddVertexAt(i, new Point2d(arrowPts[i].X, arrowPts[i].Y), 0, 0, 0);
-
-                            headPl.Closed = true;
-                            headPl.Layer = style.TargetLayer;
-                            headPl.Color = Autodesk.AutoCAD.Colors.Color.FromRgb(style.MainColor.R, style.MainColor.G, style.MainColor.B);
-
-                            btr.AppendEntity(headPl);
-                            tr.AddNewlyCreatedDBObject(headPl, true);
-                            CreateSolidHatch(btr, tr, headPl, style);
-                        }
+                        // 渲染独立的头尾
+                        if (headPts.Count > 0) RenderFeature(btr, tr, headPts, style);
+                        if (tailPts.Count > 0) RenderFeature(btr, tr, tailPts, style);
                     }
                     tr.Commit();
                 }
             }
         }
-        // ✨ 将 double (0.0-2.11) 映射到 AutoCAD 枚举
-        private static LineWeight MapLineWeight(double weight)
+
+        #region 几何计算引擎 (Mathematics)
+
+        private static Curve CreatePathCurve(Point3dCollection pts, bool isCurved)
         {
-            if (weight <= 0.0) return LineWeight.LineWeight000;
-            if (weight <= 0.15) return LineWeight.LineWeight015;
-            if (weight <= 0.30) return LineWeight.LineWeight030;
-            if (weight <= 0.50) return LineWeight.LineWeight050;
-            return LineWeight.LineWeight080;
+            if (isCurved && pts.Count > 2)
+                return new Spline(pts, 3, 0);
+
+            Polyline pl = new Polyline();
+            for (int i = 0; i < pts.Count; i++)
+                pl.AddVertexAt(i, new Point2d(pts[i].X, pts[i].Y), 0, 0, 0);
+            return pl;
         }
-        // ✨ 新增：图层管理逻辑
+
+        private static Point3dCollection CalculateFeaturePoints(Point3d basePt, Vector3d dir, AnalysisStyle style, bool isHead)
+        {
+            Point3dCollection pts = new Point3dCollection();
+            Vector3d norm = dir.GetPerpendicularVector();
+            double s = style.ArrowSize;
+
+            if (isHead)
+            {
+                switch (style.HeadType)
+                {
+                    case ArrowHeadType.Basic:
+                        pts.Add(basePt);
+                        pts.Add(basePt - dir * s + norm * s * 0.4);
+                        pts.Add(basePt - dir * s - norm * s * 0.4);
+                        break;
+                    case ArrowHeadType.SwallowTail:
+                        double d = s * style.SwallowDepth;
+                        pts.Add(basePt);
+                        pts.Add(basePt - dir * s + norm * s * 0.5);
+                        pts.Add(basePt - dir * d); // 内凹点
+                        pts.Add(basePt - dir * s - norm * s * 0.5);
+                        break;
+                    case ArrowHeadType.Circle:
+                        // 圆形由两个 1.0 凸度的段组成
+                        Point3d center = basePt - dir * s * 0.5;
+                        pts.Add(center + norm * s * 0.5);
+                        pts.Add(center - norm * s * 0.5);
+                        break;
+                }
+            }
+            else // 尾部逻辑
+            {
+                switch (style.TailType)
+                {
+                    case ArrowTailType.Swallow:
+                        double d = s * style.SwallowDepth;
+                        pts.Add(basePt);
+                        pts.Add(basePt - dir * s + norm * s * 0.5);
+                        pts.Add(basePt - dir * d);
+                        pts.Add(basePt - dir * s - norm * s * 0.5);
+                        break;
+                }
+            }
+            return pts;
+        }
+
+        private static Curve TrimPath(Curve rawPath, double headLen, double tailLen)
+        {
+            double totalLen = rawPath.GetDistanceAtParameter(rawPath.EndParam);
+            if (totalLen <= headLen + tailLen) return null;
+
+            double startDist = tailLen;
+            double endDist = totalLen - headLen;
+
+            double p1 = rawPath.GetParameterAtDistance(startDist);
+            double p2 = rawPath.GetParameterAtDistance(endDist);
+
+            DBObjectCollection subCurves = rawPath.GetSplitCurves(new DoubleCollection { p1, p2 });
+            // 返回中间那段
+            return subCurves.Count >= 2 ? subCurves[1] as Curve : subCurves[0] as Curve;
+        }
+
+        #endregion
+
+        #region 实体渲染引擎 (Rendering)
+
+        // ✨ 替换 RenderBody：支持前后宽度不一的渐变线
+        private static void RenderBody(BlockTableRecord btr, Transaction tr, Curve curve, AnalysisStyle style)
+        {
+            if (curve is Polyline pl)
+            {
+                // 赋予多段线渐变宽度
+                for (int i = 0; i < pl.NumberOfVertices; i++)
+                {
+                    pl.SetStartWidthAt(i, style.StartWidth);
+                    pl.SetEndWidthAt(i, style.EndWidth);
+                }
+            }
+
+            // 如果是双线模式，则进行偏移处理
+            if (style.LineType == LineStyleType.DoubleLine)
+            {
+                double offset = style.LineWeight * 5.0;
+                foreach (double d in new double[] { offset, -offset })
+                {
+                    var offsets = curve.GetOffsetCurves(d);
+                    foreach (Entity ent in offsets) AddToDb(btr, tr, ent, style);
+                }
+                curve.Dispose();
+            }
+            else
+            {
+                AddToDb(btr, tr, curve, style);
+            }
+        }
+
+        private static void RenderFeature(BlockTableRecord btr, Transaction tr, Point3dCollection pts, AnalysisStyle style)
+        {
+            using (Polyline pl = new Polyline())
+            {
+                for (int i = 0; i < pts.Count; i++)
+                {
+                    // 处理圆形的特殊凸度
+                    double bulge = (style.HeadType == ArrowHeadType.Circle) ? 1.0 : 0.0;
+                    pl.AddVertexAt(i, new Point2d(pts[i].X, pts[i].Y), bulge, 0, 0);
+                }
+                pl.Closed = true;
+                AddToDb(btr, tr, pl, style);
+                CreateHatch(btr, tr, pl, style);
+            }
+        }
+
+        private static void AddToDb(BlockTableRecord btr, Transaction tr, Entity ent, AnalysisStyle style)
+        {
+            ent.Layer = style.TargetLayer;
+            ent.Color = Color.FromRgb(style.MainColor.R, style.MainColor.G, style.MainColor.B);
+            ent.LineWeight = MapLineWeight(style.LineWeight);
+            btr.AppendEntity(ent);
+            tr.AddNewlyCreatedDBObject(ent, true);
+        }
+
+        private static void CreateHatch(BlockTableRecord btr, Transaction tr, Polyline boundary, AnalysisStyle style)
+        {
+            Hatch h = new Hatch();
+            btr.AppendEntity(h);
+            tr.AddNewlyCreatedDBObject(h, true);
+            h.SetHatchPattern(HatchPatternType.PreDefined, "SOLID");
+            h.Layer = boundary.Layer;
+            h.Color = boundary.Color;
+            h.Transparency = new Transparency((byte)style.Transparency);
+            h.AppendLoop(HatchLoopTypes.Default, new ObjectIdCollection { boundary.ObjectId });
+            h.EvaluateHatch(true);
+        }
+
+        private static LineWeight MapLineWeight(double w)
+        {
+            if (w < 0.1) return LineWeight.LineWeight005;
+            if (w < 0.2) return LineWeight.LineWeight015;
+            if (w < 0.4) return LineWeight.LineWeight030;
+            return LineWeight.LineWeight050;
+        }
+
         private static void EnsureLayer(Database db, Transaction tr, AnalysisStyle style)
         {
             LayerTable lt = tr.GetObject(db.LayerTableId, OpenMode.ForRead) as LayerTable;
             if (!lt.Has(style.TargetLayer))
             {
                 lt.UpgradeOpen();
-                using (LayerTableRecord ltr = new LayerTableRecord())
-                {
-                    ltr.Name = style.TargetLayer;
-                    ltr.Color = Autodesk.AutoCAD.Colors.Color.FromRgb(style.MainColor.R, style.MainColor.G, style.MainColor.B);
-                    lt.Add(ltr);
-                    tr.AddNewlyCreatedDBObject(ltr, true);
-                }
-            }
-        }
-        /// <summary>
-        /// 计算燕尾箭头的 5 个顶点坐标
-        /// </summary>
-        // 箭头坐标算法：基于传入的 tangent (切线) 重新计算，不再依赖 start-end 直线方向
-        // 箭头坐标算法：根据传入的切线向量 (uDir) 重新计算
-        private static Point3dCollection GetSwallowTailPoints(Point3d unused, Point3d end, Vector3d uDir, Vector3d uNormal, AnalysisStyle style)
-        {
-            double size = style.ArrowSize;
-            double depth = style.ArrowSize * style.SwallowDepth;
-            Point3dCollection pts = new Point3dCollection();
-            pts.Add(end);
-            Point3d backBase = end - (uDir * size);
-            pts.Add(backBase + (uNormal * (size * 0.5)));
-            pts.Add(backBase + (uDir * depth));
-            pts.Add(backBase - (uNormal * (size * 0.5)));
-            return pts;
-        }
-
-        private static void CreateSolidHatch(BlockTableRecord btr, Transaction tr, Polyline boundary, AnalysisStyle style)
-        {
-            using (Hatch hatch = new Hatch())
-            {
-                btr.AppendEntity(hatch);
-                tr.AddNewlyCreatedDBObject(hatch, true);
-                hatch.SetHatchPattern(HatchPatternType.PreDefined, "SOLID");
-                hatch.Color = boundary.Color;
-                hatch.Transparency = new Autodesk.AutoCAD.Colors.Transparency((byte)style.Transparency);
-                hatch.Layer = boundary.Layer;
-                ObjectIdCollection ids = new ObjectIdCollection { boundary.ObjectId };
-                hatch.AppendLoop(HatchLoopTypes.Default, ids);
-                hatch.EvaluateHatch(true);
+                LayerTableRecord ltr = new LayerTableRecord { Name = style.TargetLayer };
+                lt.Add(ltr);
+                tr.AddNewlyCreatedDBObject(ltr, true);
             }
         }
 
-        private static Point3dCollection GetBasicArrowPoints(Point3d unused, Point3d end, Vector3d uDir, Vector3d uNormal, AnalysisStyle style)
-        {
-            double size = style.ArrowSize;
-            Point3dCollection pts = new Point3dCollection();
-            pts.Add(end);
-            Point3d backBase = end - (uDir * size);
-            pts.Add(backBase + (uNormal * (size * 0.4)));
-            pts.Add(backBase - (uNormal * (size * 0.4)));
-            return pts;
-        }
+        #endregion
     }
 }
