@@ -1,10 +1,11 @@
-﻿using System;
-using System.Windows;
-using Autodesk.AutoCAD.ApplicationServices;
+﻿using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.EditorInput;
 using Autodesk.AutoCAD.Geometry;
 using Plugin_AnalysisMaster.Models;
 using Plugin_AnalysisMaster.Services;
+using System;
+using System.Windows;
+
 
 namespace Plugin_AnalysisMaster.UI
 {
@@ -40,11 +41,13 @@ namespace Plugin_AnalysisMaster.UI
             var btn = sender as System.Windows.Controls.Button;
             if (btn == null) return;
 
-            // 1. 根据点击的按钮生成样式参数 (这里可以根据 Tag 区分)
             AnalysisStyle selectedStyle = new AnalysisStyle
             {
                 ArrowSize = SizeSlider.Value,
-                MainColor = ((System.Windows.Media.SolidColorBrush)btn.Background).Color
+                MainColor = ((System.Windows.Media.SolidColorBrush)btn.Background).Color,
+                // ✨ 读取 UI 上的曲线开关状态
+                IsCurved = CurveCheckBox.IsChecked ?? false,
+                LineWeight = 0.30 // 默认中等线宽
             };
 
             if (btn.Tag.ToString().Contains("Swallow"))
@@ -52,38 +55,50 @@ namespace Plugin_AnalysisMaster.UI
             else
                 selectedStyle.HeadType = ArrowHeadType.Basic;
 
-            // 2. 将焦点转回 CAD 并开始取点
             DrawLineInCad(selectedStyle);
         }
 
-        private async void DrawLineInCad(AnalysisStyle style)
+        private void DrawLineInCad(AnalysisStyle style)
         {
             Document doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
             Editor ed = doc.Editor;
-
-            // 暂时隐藏窗口，避免遮挡
             this.Hide();
 
             try
             {
-                PromptPointOptions ppo1 = new PromptPointOptions("\n请选择起点: ");
-                PromptPointResult ppr1 = ed.GetPoint(ppo1);
-                if (ppr1.Status != PromptStatus.OK) return;
+                // 1. 获取起始点
+                PromptPointResult ppr = ed.GetPoint("\n请选择动线起点: ");
+                if (ppr.Status != PromptStatus.OK) return;
 
-                PromptPointOptions ppo2 = new PromptPointOptions("\n请选择终点: ");
-                ppo2.UseBasePoint = true;
-                ppo2.BasePoint = ppr1.Value;
-                PromptPointResult ppr2 = ed.GetPoint(ppo2);
-                if (ppr2.Status != PromptStatus.OK) return;
+                // 2. 初始化 Jig
+                AnalysisLineJig jig = new AnalysisLineJig(ppr.Value, style);
 
-                // 调用之前定义的 Service 层绘图引擎
-                GeometryEngine.DrawAnalysisLine(ppr1.Value, ppr2.Value, style);
+                // 3. 循环交互
+                while (true)
+                {
+                    PromptResult res = ed.Drag(jig);
+
+                    if (res.Status == PromptStatus.OK)
+                    {
+                        // 关键：将采样到的临时点正式加入点集
+                        // 这里直接使用您在 Jig 中采样的结果
+                        // 假设您在 Jig 类中暴露了最后采样点的属性：jig.LastPoint
+                        jig.GetPoints().Add(jig.LastPoint);
+                    }
+                    else if (res.Status == PromptStatus.None) // 回车结束
+                    {
+                        if (jig.GetPoints().Count >= 2)
+                            GeometryEngine.DrawAnalysisLine(jig.GetPoints(), style);
+                        break;
+                    }
+                    else break;
+                }
             }
             finally
             {
-                // 绘图结束，重新显示窗口
                 this.Show();
             }
         }
+
     }
 }
