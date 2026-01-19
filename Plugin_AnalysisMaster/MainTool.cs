@@ -1,9 +1,9 @@
-﻿using System;
-using System.Windows.Media;
-using Autodesk.AutoCAD.ApplicationServices;
+﻿using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.Runtime;
 using CadAtlasManager.Core; // 引用接口定义库
 using Plugin_AnalysisMaster.UI; // 引用 UI 命名空间
+using System;
+using System.Windows.Media;
 
 // [必选] 注册命令类，确保 AutoCAD 命令行能识别 [CommandMethod]
 [assembly: CommandClass(typeof(Plugin_AnalysisMaster.MainTool))]
@@ -11,7 +11,7 @@ using Plugin_AnalysisMaster.UI; // 引用 UI 命名空间
 namespace Plugin_AnalysisMaster
 {
     /// <summary>
-    /// 动线分析专家插件入口
+    /// 曲线大师插件入口
     /// </summary>
     public class MainTool : ICadTool
     {
@@ -20,7 +20,7 @@ namespace Plugin_AnalysisMaster
 
         #region --- ICadTool 接口实现 ---
 
-        public string ToolName => "动线分析专家"; // 显示在主面板上的名称
+        public string ToolName => "曲线大师"; // 显示在主面板上的名称
         public string IconCode => "\uE81C";      // 使用路径图标
         public string Description => "专业级动线、箭头与分析线绘制工具";
         public string Category { get; set; } = "绘图增强";

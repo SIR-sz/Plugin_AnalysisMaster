@@ -36,5 +36,12 @@ namespace Plugin_AnalysisMaster.Models
         public double PatternScale { get; set; } = 1.0;       // 整体缩放
         public double LinetypeScale { get; set; } = 1.0;      // 兼容旧代码
         public string SelectedLinetype { get; set; } = "CONTINUOUS";
+        // ✨ 新增：起点箭头图块名称
+        public string StartArrowType { get; set; } = "None";
+
+        // ✨ 新增：终点箭头图块名称
+        public string EndArrowType { get; set; } = "None";
+
+
     }
 }

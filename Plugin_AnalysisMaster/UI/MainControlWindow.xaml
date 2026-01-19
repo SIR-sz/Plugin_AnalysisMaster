@@ -207,17 +207,19 @@
                     <GroupBox Header="端头设置">
                         <StackPanel>
                             <TextBlock Text="起始端" FontSize="11" Margin="0,5,0,0"/>
-                            <ComboBox x:Name="StartCapCombo" SelectionChanged="OnParamChanged" Margin="0,2">
+                            <ComboBox x:Name="StartArrowCombo" SelectionChanged="OnParamChanged" Margin="0,2">
                                 <ComboBoxItem Content="无"/>
                                 <ComboBoxItem Content="基础箭头"/>
                                 <ComboBoxItem Content="圆点"/>
                             </ComboBox>
+
                             <TextBlock Text="结束端" FontSize="11" Margin="0,5,0,0"/>
-                            <ComboBox x:Name="EndCapCombo" SelectionChanged="OnParamChanged" Margin="0,2">
+                            <ComboBox x:Name="EndArrowCombo" SelectionChanged="OnParamChanged" Margin="0,2">
                                 <ComboBoxItem Content="无"/>
                                 <ComboBoxItem Content="基础箭头" IsSelected="True"/>
                                 <ComboBoxItem Content="圆点"/>
                             </ComboBox>
+
                             <TextBlock Text="箭头尺寸" FontSize="11" Margin="0,5,0,0"/>
                             <Grid>
                                 <Grid.ColumnDefinitions>

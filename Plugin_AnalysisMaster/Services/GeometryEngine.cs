@@ -152,27 +152,121 @@ namespace Plugin_AnalysisMaster.Services
                 }
             }
             // 分支 2：阵列模式 (Pattern)
+            // 分支 2：阵列模式 (Pattern)
             else if (style.PathType == PathCategory.Pattern)
             {
                 ObjectId blockId = GetOrImportBlock(style.SelectedBlockName, btr.Database, tr);
                 if (blockId.IsNull) return;
 
+                // ✨ 修复 1：使用 AutoCAD 标准 API 获取长度
+                // 注意：这里去掉了 double，直接给已有的 len 变量赋值（修复 CS0136）
+                // 如果上方没有定义过 len，则保留 double
+                len = curve.GetDistanceAtParameter(curve.EndParam);
+
                 double dist = 0;
+
+                // 安全检查：防止间距过小导致死循环
+                double spacing = style.PatternSpacing;
+                if (spacing <= 0.001) spacing = 10.0;
+
                 while (dist <= len)
                 {
                     Point3d pt = curve.GetPointAtDist(dist);
-                    Vector3d tan = curve.GetFirstDerivative(curve.GetParameterAtDistance(dist)).GetNormal();
+
+                    // 获取当前位置的参数和切线
+                    double param = curve.GetParameterAtDistance(dist);
+                    Vector3d tan = curve.GetFirstDerivative(param).GetNormal();
+
                     using (BlockReference br = new BlockReference(pt, blockId))
                     {
                         br.Rotation = Math.Atan2(tan.Y, tan.X);
                         br.ScaleFactors = new Scale3d(style.PatternScale);
+
+                        // 设置颜色
+                        br.Color = Autodesk.AutoCAD.Colors.Color.FromRgb(
+                            style.MainColor.R,
+                            style.MainColor.G,
+                            style.MainColor.B);
+
                         ids.Add(AddToDb(btr, tr, br, style));
                     }
-                    dist += style.PatternSpacing;
+
+                    // 按 UI 设定的间距递增
+                    dist += spacing;
                 }
             }
         }
+        private static void RenderHead(BlockTableRecord btr, Transaction tr, Curve curve, AnalysisStyle style)
+        {
+            // 1. 拦截“无”选项
+            if (string.IsNullOrEmpty(style.StartArrowType) ||
+                style.StartArrowType.Equals("None", StringComparison.OrdinalIgnoreCase) ||
+                style.StartArrowType.Equals("无"))
+            {
+                return;
+            }
 
+            // 2. 获取块定义 ID
+            ObjectId blockId = GetOrImportBlock(style.StartArrowType, btr.Database, tr);
+            if (blockId.IsNull) return;
+
+            // 3. 计算起点位置和切线角度
+            Point3d startPt = curve.StartPoint;
+            // 获取起点处的导数（矢量），用于确定旋转方向
+            Vector3d dir = curve.GetFirstDerivative(curve.StartParam).GetNormal();
+
+            using (BlockReference br = new BlockReference(startPt, blockId))
+            {
+                // 旋转角度：Atan2 将矢量转换为 CAD 弧度
+                // 注意：起点箭头通常需要反向（180度），如果你的块本身就是朝向终点的，可能需要 + Math.PI
+                br.Rotation = Math.Atan2(dir.Y, dir.X) + Math.PI;
+
+                br.ScaleFactors = new Scale3d(style.PatternScale);
+
+                // 同步 UI 颜色
+                br.Color = Autodesk.AutoCAD.Colors.Color.FromRgb(
+                    style.MainColor.R,
+                    style.MainColor.G,
+                    style.MainColor.B);
+
+                // 调用你已有的 AddToDb 方法添加到图纸
+                AddToDb(btr, tr, br, style);
+            }
+        }
+        private static void RenderTail(BlockTableRecord btr, Transaction tr, Curve curve, AnalysisStyle style)
+        {
+            // 1. 拦截“无”选项
+            if (string.IsNullOrEmpty(style.EndArrowType) ||
+                style.EndArrowType.Equals("None", StringComparison.OrdinalIgnoreCase) ||
+                style.EndArrowType.Equals("无"))
+            {
+                return;
+            }
+
+            // 2. 获取块定义 ID
+            ObjectId blockId = GetOrImportBlock(style.EndArrowType, btr.Database, tr);
+            if (blockId.IsNull) return;
+
+            // 3. 计算终点位置和角度
+            Point3d endPt = curve.EndPoint;
+            Vector3d dir = curve.GetFirstDerivative(curve.EndParam).GetNormal();
+
+            using (BlockReference br = new BlockReference(endPt, blockId))
+            {
+                // 终点旋转角度通常直接跟随切线方向
+                br.Rotation = Math.Atan2(dir.Y, dir.X);
+
+                br.ScaleFactors = new Scale3d(style.PatternScale);
+
+                // 同步 UI 颜色
+                br.Color = Autodesk.AutoCAD.Colors.Color.FromRgb(
+                    style.MainColor.R,
+                    style.MainColor.G,
+                    style.MainColor.B);
+
+                AddToDb(btr, tr, br, style);
+            }
+        }
         private static void RenderFeature(BlockTableRecord btr, Transaction tr, Point3dCollection pts, AnalysisStyle style, ObjectIdCollection idCol)
         {
             if (pts.Count == 0) return;

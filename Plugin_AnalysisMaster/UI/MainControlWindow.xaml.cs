@@ -16,7 +16,7 @@ using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
 using AcApp = Autodesk.AutoCAD.ApplicationServices.Application;
 
-// 解决 CS0104：明确指定 UI 使用的类型别名
+// 别名定义，解决命名空间冲突
 using Image = System.Windows.Controls.Image;
 using Line = System.Windows.Shapes.Line;
 using Path = System.IO.Path;
@@ -28,7 +28,6 @@ namespace Plugin_AnalysisMaster.UI
         private AnalysisStyle _currentStyle = new AnalysisStyle();
         private static MainControlWindow _instance;
 
-        // 用于释放非托管 HBitmap 资源
         [DllImport("gdi32.dll")]
         public static extern bool DeleteObject(IntPtr hObject);
 
@@ -79,27 +78,52 @@ namespace Plugin_AnalysisMaster.UI
         {
             if (PathTypeCombo == null || _currentStyle == null) return;
 
-            // 1. 同步路径模式
+            // 1. 同步路径模式 (实线 vs 阵列)
             var typeItem = (ComboBoxItem)PathTypeCombo.SelectedItem;
             if (typeItem != null)
                 _currentStyle.PathType = (PathCategory)Enum.Parse(typeof(PathCategory), typeItem.Tag.ToString());
 
-            // 2. ✨ 修复：使用 SelectedItem 而非 Text，确保获取当前即时选中的块名
-            // 因为在 SelectionChanged 事件触发瞬间，Text 属性可能还是旧值
+            // 2. 同步选中的图块名称 (用于阵列模式)
             if (BlockLibraryCombo != null && BlockLibraryCombo.SelectedItem != null)
-            {
                 _currentStyle.SelectedBlockName = BlockLibraryCombo.SelectedItem.ToString();
-            }
-            else
+
+            // 3. ✨ 新增：同步起点箭头类型
+            if (StartArrowCombo != null && StartArrowCombo.SelectedItem != null)
             {
-                _currentStyle.SelectedBlockName = BlockLibraryCombo?.Text ?? "";
+                // 获取选中的文本（如果是 ComboBoxItem 则取 Content）
+                string val = (StartArrowCombo.SelectedItem is ComboBoxItem cbi)
+                             ? cbi.Content.ToString()
+                             : StartArrowCombo.SelectedItem.ToString();
+
+                // 如果选的是“无”，则存入 "None"，否则存入块名
+                _currentStyle.StartArrowType = (val == "无" || val == "None") ? "None" : val;
             }
 
-            // 3. 同步其他参数
+            // 4. ✨ 新增：同步结束端箭头类型
+            if (EndArrowCombo != null && EndArrowCombo.SelectedItem != null)
+            {
+                string val = (EndArrowCombo.SelectedItem is ComboBoxItem cbi)
+                             ? cbi.Content.ToString()
+                             : EndArrowCombo.SelectedItem.ToString();
+
+                _currentStyle.EndArrowType = (val == "无" || val == "None") ? "None" : val;
+            }
+
+            // 5. 同步颜色透明度
             _currentStyle.Transparency = TransSlider?.Value ?? 0;
+
+            // 6. 同步实线宽度参数 (起点、中点、终点)
             _currentStyle.StartWidth = StartWidthSlider?.Value ?? 1.0;
             _currentStyle.MidWidth = MidWidthSlider?.Value ?? 0.8;
             _currentStyle.EndWidth = EndWidthSlider?.Value ?? 0.5;
+
+            // 7. 同步排列间距
+            if (SpacingSlider != null)
+            {
+                _currentStyle.PatternSpacing = SpacingSlider.Value;
+            }
+
+            // 8. 同步图块缩放比例
             _currentStyle.PatternScale = PatternScaleSlider?.Value ?? 1.0;
         }
 
@@ -124,10 +148,11 @@ namespace Plugin_AnalysisMaster.UI
                 int segments = 40;
                 for (int i = 0; i < segments; i++)
                 {
-                    System.Windows.Point pt1 = GetBezierPoint(i / 40.0, p1, p2, p3);
+                    double t = i / 40.0;
+                    System.Windows.Point pt1 = GetBezierPoint(t, p1, p2, p3);
                     System.Windows.Point pt2 = GetBezierPoint((i + 1.0) / 40.0, p1, p2, p3);
+                    double thickness = CalculateBezierWidth(t, _currentStyle.StartWidth, _currentStyle.MidWidth, _currentStyle.EndWidth);
 
-                    // 此处使用 System.Windows.Shapes.Line (通过别名)
                     Line line = new Line
                     {
                         X1 = pt1.X,
@@ -135,7 +160,7 @@ namespace Plugin_AnalysisMaster.UI
                         X2 = pt2.X,
                         Y2 = pt2.Y,
                         Stroke = brush,
-                        StrokeThickness = 8,
+                        StrokeThickness = thickness * 1.5,
                         StrokeStartLineCap = PenLineCap.Round,
                         StrokeEndLineCap = PenLineCap.Round
                     };
@@ -148,7 +173,7 @@ namespace Plugin_AnalysisMaster.UI
                 if (string.IsNullOrEmpty(blockName)) return;
 
                 SyncBlockToCurrentDoc(blockName);
-                ImageSource imgSource = GetBlockImageSource(blockName);
+                ImageSource maskSource = GetBlockMaskSource(blockName); // 获取带透明度的遮罩
 
                 double step = 0.15;
                 for (double t = 0; t <= 1; t += step)
@@ -156,23 +181,25 @@ namespace Plugin_AnalysisMaster.UI
                     System.Windows.Point pt = GetBezierPoint(t, p1, p2, p3);
                     double imgSize = 22;
 
-                    // 此处使用 System.Windows.Controls.Image (通过别名)
-                    Image img = new Image
+                    // ✨ 使用 Rectangle + OpacityMask 实现变色效果
+                    var colorRect = new System.Windows.Shapes.Rectangle
                     {
-                        Source = imgSource,
                         Width = imgSize,
                         Height = imgSize,
-                        Stretch = Stretch.Uniform
+                        Fill = brush
                     };
+
+                    if (maskSource != null)
+                        colorRect.OpacityMask = new ImageBrush(maskSource);
 
                     System.Windows.Point nPt = GetBezierPoint(Math.Min(t + 0.01, 1), p1, p2, p3);
                     Vector v = nPt - pt;
                     double angle = Math.Atan2(v.Y, v.X) * 180 / Math.PI;
 
-                    img.RenderTransform = new RotateTransform(angle, imgSize / 2, imgSize / 2);
-                    Canvas.SetLeft(img, pt.X - imgSize / 2);
-                    Canvas.SetTop(img, pt.Y - imgSize / 2);
-                    PreviewCanvas.Children.Add(img);
+                    colorRect.RenderTransform = new RotateTransform(angle, imgSize / 2, imgSize / 2);
+                    Canvas.SetLeft(colorRect, pt.X - imgSize / 2);
+                    Canvas.SetTop(colorRect, pt.Y - imgSize / 2);
+                    PreviewCanvas.Children.Add(colorRect);
                 }
             }
         }
@@ -182,13 +209,13 @@ namespace Plugin_AnalysisMaster.UI
             var doc = AcApp.DocumentManager.MdiActiveDocument;
             if (doc == null) return;
 
-            // ✨ 修复关键：从非模态窗口修改数据库必须先锁定文档，防止 eLockViolation
+            // ✨ 修复：锁定文档，防止 eLockViolation 错误
             using (DocumentLock loc = doc.LockDocument())
             {
                 using (var tr = doc.Database.TransactionManager.StartTransaction())
                 {
                     BlockTable bt = (BlockTable)tr.GetObject(doc.Database.BlockTableId, OpenMode.ForRead);
-                    if (bt.Has(blockName)) return; // 如果已经导入过了，直接跳过
+                    if (bt.Has(blockName)) return;
 
                     string dllPath = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
                     string libPath = Path.Combine(dllPath, "Assets", "PatternLibrary.dwg");
@@ -205,11 +232,9 @@ namespace Plugin_AnalysisMaster.UI
                                 if (btSrc.Has(blockName)) ids.Add(btSrc[blockName]);
                                 trSrc.Commit();
                             }
-
                             if (ids.Count > 0)
                             {
                                 IdMapping mapping = new IdMapping();
-                                // 跨数据库克隆对象
                                 doc.Database.WblockCloneObjects(ids, doc.Database.BlockTableId, mapping, DuplicateRecordCloning.Ignore, false);
                             }
                         }
@@ -219,39 +244,52 @@ namespace Plugin_AnalysisMaster.UI
             }
         }
 
-        private ImageSource GetBlockImageSource(string blockName)
+        // ✨ 改进：获取带透明背景的块快照作为遮罩
+        private ImageSource GetBlockMaskSource(string blockName)
         {
             var doc = AcApp.DocumentManager.MdiActiveDocument;
             if (doc == null) return null;
 
-            // 建议：由于是从 modeless 窗口访问，确保数据库处于可读状态
             using (var tr = doc.Database.TransactionManager.StartTransaction())
             {
                 BlockTable bt = (BlockTable)tr.GetObject(doc.Database.BlockTableId, OpenMode.ForRead);
                 if (bt.Has(blockName))
                 {
-                    var acColor = Autodesk.AutoCAD.Colors.Color.FromRgb(30, 30, 30);
+                    var acColor = Autodesk.AutoCAD.Colors.Color.FromRgb(0, 0, 0); // 黑色背景
                     IntPtr hBitmap = Autodesk.AutoCAD.Internal.Utils.GetBlockImage(bt[blockName], 128, 128, acColor);
 
                     if (hBitmap != IntPtr.Zero)
                     {
                         try
                         {
-                            return Imaging.CreateBitmapSourceFromHBitmap(
-                                hBitmap,
-                                IntPtr.Zero,
-                                Int32Rect.Empty,
-                                BitmapSizeOptions.FromEmptyOptions());
+                            // 将 HBitmap 转为 System.Drawing.Bitmap 以便处理透明度
+                            using (System.Drawing.Bitmap bmp = System.Drawing.Image.FromHbitmap(hBitmap))
+                            {
+                                // ✨ 关键：将黑色背景设为透明，否则预览就是方形色块
+                                bmp.MakeTransparent(System.Drawing.Color.Black);
+                                return BitmapToImageSource(bmp);
+                            }
                         }
-                        finally
-                        {
-                            DeleteObject(hBitmap); // 必须释放非托管资源
-                        }
+                        finally { DeleteObject(hBitmap); }
                     }
                 }
-                tr.Commit();
             }
             return null;
+        }
+
+        private ImageSource BitmapToImageSource(System.Drawing.Bitmap bitmap)
+        {
+            using (MemoryStream ms = new MemoryStream())
+            {
+                bitmap.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
+                ms.Position = 0;
+                var bi = new BitmapImage();
+                bi.BeginInit();
+                bi.StreamSource = ms;
+                bi.CacheOption = BitmapCacheOption.OnLoad;
+                bi.EndInit();
+                return bi;
+            }
         }
 
         private System.Windows.Point GetBezierPoint(double t, System.Windows.Point p0, System.Windows.Point p1, System.Windows.Point p2)
@@ -261,31 +299,37 @@ namespace Plugin_AnalysisMaster.UI
             return new System.Windows.Point(x, y);
         }
 
+        private double CalculateBezierWidth(double t, double s, double m, double e)
+        {
+            return (1 - t) * (1 - t) * s + 2 * t * (1 - t) * m + t * t * e;
+        }
+
         private void OnPathTypeChanged(object sender, SelectionChangedEventArgs e)
         {
             if (!this.IsLoaded) return;
             SyncStyleFromUI();
 
-            // 解决 CS0176：显式使用 System.Windows.Visibility 类型名访问枚举成员
+            // ✨ 修复关键：使用 System.Windows.Visibility (类名) 而非属性名来访问 Visible/Collapsed
             if (SolidPanel != null)
+            {
                 SolidPanel.Visibility = (_currentStyle.PathType == PathCategory.Solid)
-                    ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
+                    ? System.Windows.Visibility.Visible
+                    : System.Windows.Visibility.Collapsed;
+            }
 
             if (PatternPanel != null)
+            {
                 PatternPanel.Visibility = (_currentStyle.PathType == PathCategory.Pattern)
-                    ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
+                    ? System.Windows.Visibility.Visible
+                    : System.Windows.Visibility.Collapsed;
+            }
 
             UpdatePreview();
         }
 
         private void OnParamChanged(object sender, SelectionChangedEventArgs e)
         {
-            // 确保窗口加载完成后再执行，防止初始化时的空引用
-            if (this.IsLoaded)
-            {
-                SyncStyleFromUI(); // 此时 SyncStyleFromUI 会通过 SelectedItem 拿到正确名字
-                UpdatePreview();   // UpdatePreview 接着会根据正确名字去抓取 CAD 图片
-            }
+            if (this.IsLoaded) { SyncStyleFromUI(); UpdatePreview(); }
         }
 
         private void OnParamChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
@@ -295,13 +339,12 @@ namespace Plugin_AnalysisMaster.UI
 
         private void SelectColor_Click(object sender, System.Windows.Input.MouseButtonEventArgs e)
         {
-            Autodesk.AutoCAD.Windows.ColorDialog colorDlg = new Autodesk.AutoCAD.Windows.ColorDialog();
+            var colorDlg = new Autodesk.AutoCAD.Windows.ColorDialog();
             colorDlg.Color = Autodesk.AutoCAD.Colors.Color.FromRgb(_currentStyle.MainColor.R, _currentStyle.MainColor.G, _currentStyle.MainColor.B);
-
             if (colorDlg.ShowDialog() == System.Windows.Forms.DialogResult.OK)
             {
-                System.Drawing.Color selectedColor = colorDlg.Color.ColorValue;
-                _currentStyle.MainColor = Color.FromRgb(selectedColor.R, selectedColor.G, selectedColor.B);
+                System.Drawing.Color c = colorDlg.Color.ColorValue;
+                _currentStyle.MainColor = Color.FromRgb(c.R, c.G, c.B);
                 if (ColorPreview != null) ColorPreview.Fill = new SolidColorBrush(_currentStyle.MainColor);
                 UpdatePreview();
             }
