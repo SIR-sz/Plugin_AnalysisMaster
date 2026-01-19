@@ -4,7 +4,7 @@ namespace Plugin_AnalysisMaster.Models
 {
     // ✨ 统一枚举：确保包含 Pattern (自定义类)
 
-    public enum PathCategory { None, Solid, Dashed, CustomPattern }
+    public enum PathCategory { None, Solid, Dashed, Pattern }
     public enum BuiltInPatternType { Dot, Square, ShortDash }
     public enum ArrowHeadType { None, Basic, SwallowTail, Circle, Square }
     public enum ArrowTailType { None, Swallow, Circle, Bar }

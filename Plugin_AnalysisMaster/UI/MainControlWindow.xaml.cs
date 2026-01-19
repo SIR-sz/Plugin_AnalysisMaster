@@ -342,15 +342,14 @@ namespace Plugin_AnalysisMaster.UI
             if (!this.IsLoaded) return;
             SyncStyleFromUI();
 
+            // ✨ 修复：引用正确的枚举名 Pattern
             if (DashedOptionsPanel != null)
                 DashedOptionsPanel.Visibility = (_currentStyle.PathType == PathCategory.Dashed)
-                    ? System.Windows.Visibility.Visible
-                    : System.Windows.Visibility.Collapsed;
+                    ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
 
             if (PatternOptionsPanel != null)
                 PatternOptionsPanel.Visibility = (_currentStyle.PathType == PathCategory.Pattern)
-                    ? System.Windows.Visibility.Visible
-                    : System.Windows.Visibility.Collapsed;
+                    ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
 
             UpdatePreview();
         }

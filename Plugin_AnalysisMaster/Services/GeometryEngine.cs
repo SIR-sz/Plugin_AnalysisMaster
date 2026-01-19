@@ -13,6 +13,17 @@ namespace Plugin_AnalysisMaster.Services
         public static void DrawAnalysisLine(Point3dCollection points, AnalysisStyle style)
         {
             if (points == null || points.Count < 2) return;
+
+            // ✨ 修复 eDegenerateGeometry：通过预检路径总长度，拦截因点重合导致的退化几何
+            double checkDist = 0;
+            for (int i = 0; i < points.Count - 1; i++)
+            {
+                checkDist += points[i].DistanceTo(points[i + 1]);
+            }
+
+            // 如果总长度接近于 0，则不执行后续渲染，避免 EndParam 崩溃
+            if (checkDist < 1e-6) return;
+
             Document doc = Application.DocumentManager.MdiActiveDocument;
             using (DocumentLock dl = doc.LockDocument())
             {
@@ -119,13 +130,15 @@ namespace Plugin_AnalysisMaster.Services
         }
 
         // ✨ 完整方法：实现“动态多段线单元”阵列渲染逻辑
+        // ✨ 完整方法：实现实线渐变、固定宽2的虚线阵列及自定义块阵列
         private static void RenderBody(BlockTableRecord btr, Transaction tr, Curve curve, AnalysisStyle style, ObjectIdCollection allIds)
         {
             if (style.PathType == PathCategory.None) return;
 
+            Database db = btr.Database;
             double totalLen = curve.GetDistanceAtParameter(curve.EndParam);
 
-            // 1. 实线类逻辑 (保持原样)
+            // 1. 实线类逻辑 (Solid) - 连续渐变宽度多段线
             if (style.PathType == PathCategory.Solid)
             {
                 double sampleStep = style.ArrowSize * 0.4;
@@ -144,8 +157,10 @@ namespace Plugin_AnalysisMaster.Services
                         {
                             double t = (double)i / (double)numSegments;
                             double nextT = (double)(i + 1) / (double)numSegments;
+
                             double currentW = CalculateBezierWidth(t, style.StartWidth, style.MidWidth, style.EndWidth);
                             double nextW = CalculateBezierWidth(nextT, style.StartWidth, style.MidWidth, style.EndWidth);
+
                             visualSkin.SetStartWidthAt(i, currentW);
                             visualSkin.SetEndWidthAt(i, nextW);
                         }
@@ -153,90 +168,101 @@ namespace Plugin_AnalysisMaster.Services
                     allIds.Add(AddToDb(btr, tr, visualSkin, style));
                 }
             }
-            // 2. ✨ 新增虚线类逻辑：动态生成多段线单元并阵列放置
+            // 2. 虚线类逻辑 (Dashed) - ✨ 改造点：宽度固定为 2 的多段线单元整列
             else if (style.PathType == PathCategory.Dashed)
             {
-                // 计算单元长度和间距（受线形比例滑块控制）
-                double dashUnitLen = style.ArrowSize * 0.8 * style.LinetypeScale;
+                // 线元长度与空隙：受 LinetypeScale 比例影响
+                double dashLen = style.ArrowSize * 0.8 * style.LinetypeScale;
                 double gapLen = style.ArrowSize * 0.6 * style.LinetypeScale;
                 double currentDist = 0;
 
                 while (currentDist < totalLen)
                 {
-                    double segmentEnd = Math.Min(currentDist + dashUnitLen, totalLen);
+                    double segmentEnd = Math.Min(currentDist + dashLen, totalLen);
                     if (segmentEnd <= currentDist) break;
 
-                    // 获取当前段在路径上的参数区间
                     double pStart = curve.GetParameterAtDistance(currentDist);
                     double pEnd = curve.GetParameterAtDistance(segmentEnd);
 
-                    // 提取骨架路径的子段
                     using (DBObjectCollection subCurves = curve.GetSplitCurves(new DoubleCollection { pStart, pEnd }))
                     {
-                        Curve dashSeg = null;
-                        // 获取切割后的目标段（逻辑：pStart后的第一段或中间段）
-                        if (subCurves.Count >= 3) dashSeg = subCurves[1] as Curve;
-                        else if (subCurves.Count >= 2) dashSeg = (currentDist == 0) ? subCurves[0] as Curve : subCurves[1] as Curve;
-                        else dashSeg = subCurves[0] as Curve;
-
+                        // 获取切割后的路径子段
+                        Curve dashSeg = (subCurves.Count >= 3) ? subCurves[1] as Curve : subCurves[0] as Curve;
                         if (dashSeg != null)
                         {
-                            // 将子段转换为多段线实体，以便应用用户定义的物理宽度
                             using (Polyline unitPl = ConvertToPolyline(dashSeg))
                             {
-                                // ✨ 应用用户通过数值调整的起点和终点物理宽度
-                                unitPl.SetStartWidthAt(0, style.StartWidth);
-                                unitPl.SetEndWidthAt(unitPl.NumberOfVertices - 1, style.EndWidth);
+                                // ✨ 按照要求：宽度写死为 2.0
+                                unitPl.SetStartWidthAt(0, 2.0);
+                                unitPl.SetEndWidthAt(unitPl.NumberOfVertices - 1, 2.0);
 
-                                // 添加到数据库并收集 ID
                                 allIds.Add(AddToDb(btr, tr, unitPl, style));
                             }
                         }
+                        // 释放切割产生的中间对象
+                        foreach (DBObject obj in subCurves) { if (obj != null && !obj.IsDisposed) obj.Dispose(); }
                     }
-                    // 移动到下一个阵列点
-                    currentDist += dashUnitLen + gapLen;
+                    currentDist += dashLen + gapLen;
                 }
             }
-            // 3. 自定义类逻辑 (保持原有的块阵列逻辑)
-            else if (style.PathType == PathCategory.CustomPattern)
+            // 3. 自定义类逻辑 (Pattern) - 种子块自适应阵列
+            else if (style.PathType == PathCategory.Pattern)
             {
-                // (执行您之前已完成的 CustomPattern 块参照阵列代码)
+                double spacing = style.ArrowSize * 1.5 * style.LinetypeScale;
+                double currentDist = 0;
+
+                ObjectId patternBlockId = GetBlockIdByName(style.CustomBlockName, db, tr);
+
+                if (!patternBlockId.IsNull)
+                {
+                    while (currentDist <= totalLen)
+                    {
+                        Point3d pt = curve.GetPointAtDist(currentDist);
+                        double param = curve.GetParameterAtDistance(currentDist);
+                        Vector3d tangent = curve.GetFirstDerivative(param).GetNormal();
+
+                        // 块的大小依然受贝塞尔宽度趋势控制
+                        double t = currentDist / totalLen;
+                        double scale = CalculateBezierWidth(t, style.StartWidth, style.MidWidth, style.EndWidth);
+
+                        using (BlockReference br = new BlockReference(pt, patternBlockId))
+                        {
+                            br.Rotation = Math.Atan2(tangent.Y, tangent.X);
+                            br.ScaleFactors = new Scale3d(scale, scale, scale);
+                            br.Color = Autodesk.AutoCAD.Colors.Color.FromRgb(style.MainColor.R, style.MainColor.G, style.MainColor.B);
+
+                            ObjectId id = btr.AppendEntity(br);
+                            tr.AddNewlyCreatedDBObject(br, true);
+                            allIds.Add(id);
+                        }
+                        currentDist += spacing;
+                    }
+                }
             }
 
             RenderSkeleton(btr, tr, curve);
         }
         // 在 Services\GeometryEngine.cs 中添加
+        // ✨ 完整方法：渲染底部灰色骨架线
         private static void RenderSkeleton(BlockTableRecord btr, Transaction tr, Curve curve)
         {
-            // 克隆原始路径作为骨架
             Entity skeleton = (Entity)curve.Clone();
-
-            // 设置为淡灰色 (ACI 253) 并应用半透明效果
+            // 使用淡灰色 (ACI 253)
             skeleton.Color = Autodesk.AutoCAD.Colors.Color.FromColorIndex(Autodesk.AutoCAD.Colors.ColorMethod.ByAci, 253);
-            skeleton.Transparency = new Autodesk.AutoCAD.Colors.Transparency(180);
-
-            // 如果图纸中有 HIDDEN 线型则应用，否则保持实线
-            Database db = btr.Database;
-            LinetypeTable lt = (LinetypeTable)tr.GetObject(db.LinetypeTableId, OpenMode.ForRead);
-            if (lt.Has("HIDDEN"))
-            {
-                skeleton.Linetype = "HIDDEN";
-            }
-
             btr.AppendEntity(skeleton);
             tr.AddNewlyCreatedDBObject(skeleton, true);
         }
 
-        // ✨ 完整方法：辅助工具，将任意曲线子段转换为带权重的多段线单元
+        // ✨ 新增辅助方法：曲线转多段线
+        // ✨ 完整方法：将路径子段转换为多段线，以便应用物理宽度
         private static Polyline ConvertToPolyline(Curve curve)
         {
-            // 如果本身就是多段线，直接克隆
             if (curve is Polyline pl) return pl.Clone() as Polyline;
 
             Polyline newPl = new Polyline();
             double len = curve.GetDistanceAtParameter(curve.EndParam);
 
-            // 为了保证虚线单元在弯曲路径上平滑，采样 6 个点即可
+            // 采样 5 个点以确保子段能够顺滑匹配原路径的弯曲度
             int samples = 5;
             for (int i = 0; i <= samples; i++)
             {
@@ -246,15 +272,26 @@ namespace Plugin_AnalysisMaster.Services
             return newPl;
         }
 
+        // ✨ 修复：将 AddToDb 返回类型改为 ObjectId
         private static ObjectId AddToDb(BlockTableRecord btr, Transaction tr, Entity ent, AnalysisStyle style)
         {
             ent.Layer = style.TargetLayer;
             ent.Color = Color.FromRgb(style.MainColor.R, style.MainColor.G, style.MainColor.B);
+            ent.LineWeight = MapLineWeight(style.LineWeight);
+
             ObjectId id = btr.AppendEntity(ent);
             tr.AddNewlyCreatedDBObject(ent, true);
             return id;
         }
-
+        // ✨ 修复：补全缺失的线宽映射方法
+        private static Autodesk.AutoCAD.DatabaseServices.LineWeight MapLineWeight(double w)
+        {
+            if (w < 0.1) return Autodesk.AutoCAD.DatabaseServices.LineWeight.LineWeight005;
+            if (w < 0.2) return Autodesk.AutoCAD.DatabaseServices.LineWeight.LineWeight015;
+            if (w < 0.35) return Autodesk.AutoCAD.DatabaseServices.LineWeight.LineWeight030; // 0.3mm
+            if (w < 0.5) return Autodesk.AutoCAD.DatabaseServices.LineWeight.LineWeight040;
+            return Autodesk.AutoCAD.DatabaseServices.LineWeight.LineWeight050;
+        }
         private static void RenderFeature(BlockTableRecord btr, Transaction tr, Point3dCollection pts, AnalysisStyle style, ObjectIdCollection idCol)
         {
             using (Polyline pl = new Polyline())
@@ -279,36 +316,46 @@ namespace Plugin_AnalysisMaster.Services
             }
         }
 
-        private static ObjectId GetBlockIdByName(string name, Database db, Transaction tr) => (string.IsNullOrEmpty(name)) ? ObjectId.Null : (((BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead)).Has(name) ? ((BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead))[name] : ObjectId.Null);
+        // ✨ 完整方法：通过名称获取块 ID
+        private static ObjectId GetBlockIdByName(string blockName, Database db, Transaction tr)
+        {
+            if (string.IsNullOrEmpty(blockName)) return ObjectId.Null;
+            BlockTable bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+            return bt.Has(blockName) ? bt[blockName] : ObjectId.Null;
+        }
         private static Curve CreatePathCurve(Point3dCollection pts, bool isCurved) => (isCurved && pts.Count > 2) ? (Curve)new Spline(pts, 3, 0) : new Polyline();
         private static Point3dCollection CalculateFeaturePoints(Point3d basePt, Vector3d dir, AnalysisStyle style, bool isHead) => new Point3dCollection { basePt, basePt - dir * style.ArrowSize };
-        private static Curve TrimPath(Curve raw, double headLen, double tailLen)
+        private static Curve TrimPath(Curve rawPath, double headLen, double tailLen)
         {
+            // ✨ 修复：增加长度预检与异常捕获，防止访问无效曲线参数
+            double totalLen;
             try
             {
-                double totalLen = raw.GetDistanceAtParameter(raw.EndParam);
-
-                // 增加冗余量检查，如果缩进总和大于等于总长度，直接返回 null
-                if (totalLen <= (headLen + tailLen + 1e-3)) return null;
-
-                double p1 = raw.GetParameterAtDistance(tailLen);
-                double p2 = raw.GetParameterAtDistance(totalLen - headLen);
-
-                using (DBObjectCollection subCurves = raw.GetSplitCurves(new DoubleCollection { p1, p2 }))
-                {
-                    // 确保集合不为空且元素数量足够
-                    if (subCurves != null && subCurves.Count > 0)
-                    {
-                        // 正常的两刀切割会产生 3 段，索引 1 为中间路径
-                        // 如果只产生 2 段或 1 段，则安全取值防止越界
-                        int targetIndex = (subCurves.Count >= 3) ? 1 : 0;
-                        return subCurves[targetIndex].Clone() as Curve;
-                    }
-                }
+                totalLen = rawPath.GetDistanceAtParameter(rawPath.EndParam);
             }
             catch
             {
-                // 捕捉可能的几何计算异常，防止 CAD 直接崩溃
+                // 如果曲线无法获取参数，说明几何已退化，直接返回 null
+                return null;
+            }
+
+            // 增加冗余量检查，如果缩进总和大于总长度，返回 null
+            if (totalLen <= (headLen + tailLen + 1e-4)) return null;
+
+            double startDist = tailLen;
+            double endDist = totalLen - headLen;
+
+            double p1 = rawPath.GetParameterAtDistance(startDist);
+            double p2 = rawPath.GetParameterAtDistance(endDist);
+
+            using (DBObjectCollection subCurves = rawPath.GetSplitCurves(new DoubleCollection { p1, p2 }))
+            {
+                // 索引访问保护
+                if (subCurves != null && subCurves.Count > 0)
+                {
+                    int targetIndex = (subCurves.Count >= 3) ? 1 : 0;
+                    return subCurves[targetIndex] as Curve;
+                }
             }
             return null;
         }
