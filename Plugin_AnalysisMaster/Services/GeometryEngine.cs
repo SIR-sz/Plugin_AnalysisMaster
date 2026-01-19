@@ -166,6 +166,7 @@ namespace Plugin_AnalysisMaster.Services
         // ✨ 替换 RenderBody：支持前后宽度不一的渐变线
 
         // ✨ 完善后的渲染方法：支持自适应线型加载与比例应用
+        // ✨ 完整方法：应用动态选择的线型进行渲染
         private static void RenderBody(BlockTableRecord btr, Transaction tr, Curve curve, AnalysisStyle style)
         {
             if (style.PathType == PathCategory.None) return;
@@ -177,8 +178,7 @@ namespace Plugin_AnalysisMaster.Services
 
             using (Polyline visualSkin = new Polyline())
             {
-                // 必须开启线型生成，否则高密度顶点会导致虚线失效
-                visualSkin.Plinegen = true;
+                visualSkin.Plinegen = true; // 必须开启线型生成
 
                 for (int i = 0; i <= numSegments; i++)
                 {
@@ -199,28 +199,17 @@ namespace Plugin_AnalysisMaster.Services
                     }
                 }
 
-                // 虚线自适应处理
+                // 虚线类逻辑：动态应用 SelectedLinetype
                 if (style.PathType == PathCategory.Dashed)
                 {
                     LinetypeTable lt = (LinetypeTable)tr.GetObject(db.LinetypeTableId, OpenMode.ForRead);
-                    string ltName = "DASHED";
 
-                    // 自动加载线型逻辑
-                    if (!lt.Has(ltName))
-                    {
-                        try
-                        {
-                            // 尝试加载公制或英制线型库
-                            try { db.LoadLineTypeFile(ltName, "acadiso.lin"); }
-                            catch { db.LoadLineTypeFile(ltName, "acad.lin"); }
-                        }
-                        catch { /* 加载失败处理 */ }
-                    }
+                    // 使用用户选择的线型，如果没有选择则默认用 DASHED
+                    string ltName = string.IsNullOrEmpty(style.SelectedLinetype) ? "DASHED" : style.SelectedLinetype;
 
                     if (lt.Has(ltName))
                     {
                         visualSkin.Linetype = ltName;
-                        // ✨ 直接应用 UI 同步过来的比例
                         visualSkin.LinetypeScale = style.LinetypeScale;
                     }
                 }
@@ -229,6 +218,100 @@ namespace Plugin_AnalysisMaster.Services
             }
 
             RenderSkeleton(btr, tr, curve);
+        }
+        // ✨ 完整方法：生成用于预览的图元集合（不写入数据库）
+        // ✨ 完整方法：生成用于预览的图元集合（修复 CS1739 命名参数错误）
+        public static DBObjectCollection GeneratePreviewEntities(Point3d startPt, Point3d endPt, AnalysisStyle style)
+        {
+            DBObjectCollection entities = new DBObjectCollection();
+
+            // 1. 创建控制路径
+            Point3dCollection pts = new Point3dCollection { startPt, endPt };
+            Curve path = CreatePathCurve(pts, style.IsCurved);
+            if (path == null) return entities;
+
+            // 2. 计算方向和缩进
+            Vector3d dir = (endPt - startPt).GetNormal();
+            double headIndent = (style.EndCapStyle == ArrowHeadType.None) ? 0 : style.ArrowSize * 0.8;
+            double tailIndent = (style.StartCapStyle == ArrowHeadType.None) ? 0 : style.ArrowSize * 0.4;
+
+            Curve trimmedPath = TrimPath(path, headIndent, tailIndent);
+            Curve renderPath = trimmedPath ?? path;
+
+            // 3. 生成“皮肤”多段线
+            double totalLen = renderPath.GetDistanceAtParameter(renderPath.EndParam);
+            int numSegments = 30;
+            Polyline visualSkin = new Polyline();
+            visualSkin.Plinegen = true;
+
+            // 设置颜色（使用 FromRgb 避免 System.Drawing 引用问题）
+            visualSkin.Color = Autodesk.AutoCAD.Colors.Color.FromRgb(style.MainColor.R, style.MainColor.G, style.MainColor.B);
+
+            for (int i = 0; i <= numSegments; i++)
+            {
+                double currentDist = (totalLen / (double)numSegments) * i;
+                Point3d pt = renderPath.GetPointAtDist(currentDist);
+                visualSkin.AddVertexAt(i, new Point2d(pt.X, pt.Y), 0, 0, 0);
+
+                if (i < numSegments)
+                {
+                    double t = (double)i / (double)numSegments;
+                    double nextT = (double)(i + 1) / (double)numSegments;
+
+                    // ✨ 修复处：移除了错误的命名参数 nextW: 直接传递计算结果
+                    double currentW = CalculateBezierWidth(t, style.StartWidth, style.MidWidth, style.EndWidth);
+                    double nextW = CalculateBezierWidth(nextT, style.StartWidth, style.MidWidth, style.EndWidth);
+
+                    visualSkin.SetStartWidthAt(i, currentW);
+                    visualSkin.SetEndWidthAt(i, nextW);
+                }
+            }
+
+            // 4. 虚线线型处理（带安全检查）
+            if (style.PathType == PathCategory.Dashed)
+            {
+                Database db = HostApplicationServices.WorkingDatabase;
+                using (Transaction tr = db.TransactionManager.StartTransaction())
+                {
+                    LinetypeTable lt = (LinetypeTable)tr.GetObject(db.LinetypeTableId, OpenMode.ForRead);
+                    string ltName = "DASHED";
+
+                    if (!lt.Has(ltName))
+                    {
+                        try
+                        {
+                            try { db.LoadLineTypeFile(ltName, "acadiso.lin"); }
+                            catch { db.LoadLineTypeFile(ltName, "acad.lin"); }
+                        }
+                        catch { /* 忽略加载失败 */ }
+                    }
+
+                    if (lt.Has(ltName))
+                    {
+                        visualSkin.Linetype = ltName;
+                        visualSkin.LinetypeScale = style.LinetypeScale;
+                    }
+                }
+            }
+
+            entities.Add(visualSkin);
+
+            // 5. 生成端头预览
+            Point3dCollection headPts = CalculateFeaturePoints(endPt, dir, style, true);
+            if (headPts.Count >= 3)
+            {
+                Point3d p1 = headPts[0];
+                Point3d p2 = headPts[1];
+                Point3d p3 = headPts[2];
+                Point3d p4 = headPts.Count > 3 ? headPts[3] : headPts[2];
+                Solid solid = new Solid(p1, p2, p3, p4);
+                solid.Color = visualSkin.Color;
+                entities.Add(solid);
+            }
+
+            if (trimmedPath != null && trimmedPath != path) trimmedPath.Dispose();
+
+            return entities;
         }
         // ✨ 新增私有辅助方法：计算二次方宽度插值
         private static double CalculateBezierWidth(double t, double start, double mid, double end)

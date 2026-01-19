@@ -47,5 +47,7 @@ namespace Plugin_AnalysisMaster.Models
 
         // ✨ 新增：线型控制
         public double LinetypeScale { get; set; } = 1.0;
+        // 默认线型为 DASHED
+        public string SelectedLinetype { get; set; } = "DASHED";
     }
 }
