@@ -273,56 +273,121 @@ namespace Plugin_AnalysisMaster.UI
             this.Close();
         }
         // ✨ 完整方法：调用 AutoCAD 原生线型选择对话框并记录结果
-        // ✨ 完整修复版：处理线型选择对话框及命名空间冲突
         private void SelectLinetype_Click(object sender, System.Windows.RoutedEventArgs e)
         {
             var doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
             if (doc == null) return;
 
-            // 交互前必须锁定文档
-            using (doc.LockDocument())
+            // 发送命令打开官方线型管理器 (等同于 LISP 的 (command "_.LINETYPE"))
+            // 用户在窗口里选好并点击“置为当前”即可
+            doc.SendStringToExecute("_.LINETYPE ", true, false, false);
+
+            // 提示用户
+            doc.Editor.WriteMessage("\n[动线专家] 请在弹出窗口中选择线型并点击“置为当前”。");
+
+            // 自动读取当前设置
+            RefreshCurrentLinetype();
+        }
+        // 辅助方法：读取 CAD 当前正在使用的线型名称
+        private void RefreshCurrentLinetype()
+        {
+            Database db = HostApplicationServices.WorkingDatabase;
+            using (var tr = db.TransactionManager.StartTransaction())
             {
-                using (var tr = doc.Database.TransactionManager.StartTransaction())
+                // 读取系统变量 CELTYPE (当前线型)
+                string currentLt = Autodesk.AutoCAD.ApplicationServices.Application.GetSystemVariable("CELTYPE").ToString();
+
+                if (_currentStyle != null)
                 {
-                    try
-                    {
-                        // 1. 调用 AutoCAD 官方线型选择对话框 (需确保已引用 acmgd.dll)
-                        Autodesk.AutoCAD.Windows.LinetypeSelectionDialog ltd = new Autodesk.AutoCAD.Windows.LinetypeSelectionDialog();
-
-                        // 2. 使用 System.Windows.Forms 的 Result 进行判断
-                        if (ltd.ShowDialog() == System.Windows.Forms.DialogResult.OK)
-                        {
-                            // 获取选中的线型 ID 并转换为记录对象
-                            var ltId = ltd.Linetype;
-                            var ltr = (Autodesk.AutoCAD.DatabaseServices.LinetypeTableRecord)tr.GetObject(ltId, Autodesk.AutoCAD.DatabaseServices.OpenMode.ForRead);
-
-                            if (_currentStyle != null)
-                            {
-                                // 记录选择的线型名
-                                _currentStyle.SelectedLinetype = ltr.Name;
-
-                                // 自动切换路径分类为“虚线类” (索引2)
-                                if (PathTypeCombo != null)
-                                {
-                                    PathTypeCombo.SelectedIndex = 2;
-                                }
-                                _currentStyle.PathType = PathCategory.Dashed;
-
-                                // 强制执行数据同步与预览更新
-                                SyncStyleFromUI();
-                                UpdatePreview();
-
-                                doc.Editor.WriteMessage($"\n[动线专家] 已成功应用线型: {ltr.Name}");
-                            }
-                        }
-                    }
-                    catch (System.Exception ex)
-                    {
-                        doc.Editor.WriteMessage($"\n[错误] 无法加载线型对话框: {ex.Message}");
-                    }
-                    tr.Commit();
+                    _currentStyle.SelectedLinetype = currentLt;
+                    UpdatePreview();
                 }
+                tr.Commit();
             }
         }
+        // 辅助方法：验证并应用线型
+        private void ApplyLinetypeByName(Database db, string ltName, Autodesk.AutoCAD.EditorInput.Editor ed)
+        {
+            using (var tr = db.TransactionManager.StartTransaction())
+            {
+                var lt = (LinetypeTable)tr.GetObject(db.LinetypeTableId, OpenMode.ForRead);
+
+                if (lt.Has(ltName))
+                {
+                    // 更新模型数据
+                    _currentStyle.SelectedLinetype = ltName;
+
+                    // 自动切换 UI 到虚线类
+                    if (PathTypeCombo != null) PathTypeCombo.SelectedIndex = 2;
+                    _currentStyle.PathType = PathCategory.Dashed;
+
+                    // 同步与预览刷新
+                    SyncStyleFromUI();
+                    UpdatePreview();
+
+                    ed.WriteMessage($"\n[动线专家] 线型已更改为: {ltName}");
+                }
+                else
+                {
+                    ed.WriteMessage($"\n[警告] 图纸中不存在线型 '{ltName}'，请先使用 LINETYPE 命令加载。");
+                }
+                tr.Commit();
+            }
+        }
+        // 当路径类型改变时，切换面板显示状态
+        // ✨ 完整代码块：添加到 MainControlWindow 类中
+        // ✨ 完整修复版：确保分类引用正确
+        private void OnPathTypeChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (!this.IsLoaded) return;
+            SyncStyleFromUI();
+
+            if (DashedOptionsPanel != null)
+                DashedOptionsPanel.Visibility = (_currentStyle.PathType == PathCategory.Dashed)
+                    ? System.Windows.Visibility.Visible
+                    : System.Windows.Visibility.Collapsed;
+
+            if (PatternOptionsPanel != null)
+                PatternOptionsPanel.Visibility = (_currentStyle.PathType == PathCategory.Pattern)
+                    ? System.Windows.Visibility.Visible
+                    : System.Windows.Visibility.Collapsed;
+
+            UpdatePreview();
+        }
+
+        // 拾取图纸中的块参照
+        // ✨ 完整方法：实现 CAD 块拾取逻辑
+        private void PickBlock_Click(object sender, RoutedEventArgs e)
+        {
+            var doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
+            if (doc == null) return;
+
+            this.Hide();
+            try
+            {
+                var opt = new Autodesk.AutoCAD.EditorInput.PromptEntityOptions("\n请选择图纸中的块参照: ");
+                opt.SetRejectMessage("\n所选对象必须是块参照！");
+                opt.AddAllowedClass(typeof(Autodesk.AutoCAD.DatabaseServices.BlockReference), true);
+
+                var res = doc.Editor.GetEntity(opt);
+                if (res.Status == Autodesk.AutoCAD.EditorInput.PromptStatus.OK)
+                {
+                    using (var tr = doc.Database.TransactionManager.StartTransaction())
+                    {
+                        var br = (Autodesk.AutoCAD.DatabaseServices.BlockReference)tr.GetObject(res.ObjectId, Autodesk.AutoCAD.DatabaseServices.OpenMode.ForRead);
+                        _currentStyle.CustomBlockName = br.Name;
+                        if (BlockNameTxt != null) BlockNameTxt.Text = br.Name;
+                        tr.Commit();
+                    }
+                }
+            }
+            finally
+            {
+                this.Show();
+                UpdatePreview();
+            }
+        }
+
+
     }
 }

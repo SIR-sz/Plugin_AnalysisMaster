@@ -49,24 +49,35 @@
                 </ComboBox>
 
                 <TextBlock Text="路径分类" Foreground="#AAA" FontSize="11" Margin="0,8,0,0"/>
-                <ComboBox Name="PathTypeCombo" Margin="0,5" SelectionChanged="OnParamChanged">
+                <ComboBox Name="PathTypeCombo" Margin="0,5" SelectionChanged="OnPathTypeChanged">
                     <ComboBoxItem Content="不生成路径 (None)"/>
                     <ComboBoxItem Content="实线类 (Solid)"/>
                     <ComboBoxItem Content="虚线类 (Dashed)"/>
-                    <ComboBoxItem Content="自定义图案 (Pattern)"/>
+                    <ComboBoxItem Content="自定义类 (Pattern)"/>
                 </ComboBox>
 
-                <Button Content="选择加载 CAD 内置线型..." 
-        Height="28" Margin="0,2,0,5" 
-        Background="#3D3D3D" Foreground="#3498DB" 
-        BorderBrush="#444" BorderThickness="1"
-        FontSize="10" Click="SelectLinetype_Click">
-                    <Button.Resources>
-                        <Style TargetType="Border">
-                            <Setter Property="CornerRadius" Value="3"/>
-                        </Style>
-                    </Button.Resources>
-                </Button>
+                <StackPanel Name="DashedOptionsPanel" Visibility="Collapsed" Margin="0,5">
+                    <TextBlock Text="内置形状" Foreground="#AAA" FontSize="11"/>
+                    <ComboBox Name="BuiltInPatternCombo" Margin="0,5" SelectionChanged="OnParamChanged">
+                        <ComboBoxItem Content="圆点 (Dot)"/>
+                        <ComboBoxItem Content="方块 (Square)"/>
+                        <ComboBoxItem Content="短划线 (ShortDash)"/>
+                    </ComboBox>
+                </StackPanel>
+
+                <StackPanel Name="PatternOptionsPanel" Visibility="Collapsed" Margin="0,5">
+                    <TextBlock Text="自定义块" Foreground="#AAA" FontSize="11"/>
+                    <Grid Margin="0,5">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBox Name="BlockNameTxt" IsReadOnly="True" VerticalContentAlignment="Center" 
+                                 Padding="5,0" Height="28" Background="#1A1A1A" Foreground="White" BorderBrush="#444"/>
+                        <Button Grid.Column="1" Content="拾取块" Width="60" Height="28" Margin="5,0,0,0" 
+                                Background="#3D3D3D" Foreground="#3498DB" Click="PickBlock_Click"/>
+                    </Grid>
+                </StackPanel>
 
                 <TextBlock Text="终点样式" Foreground="#AAA" FontSize="11" Margin="0,8,0,0"/>
                 <ComboBox Name="EndCapCombo" Margin="0,5" SelectionChanged="OnParamChanged">
@@ -135,7 +146,7 @@
                         <ColumnDefinition Width="50"/>
                     </Grid.ColumnDefinitions>
                     <StackPanel>
-                        <TextBlock Text="虚线显示比例" Foreground="#AAA" FontSize="11"/>
+                        <TextBlock Text="图案/虚线 间距比例" Foreground="#AAA" FontSize="11"/>
                         <Slider Name="LtScaleSlider" Minimum="0.01" Maximum="5.0" Value="1.0" 
                                 SmallChange="0.01" LargeChange="0.1" ValueChanged="OnParamChanged"/>
                     </StackPanel>
