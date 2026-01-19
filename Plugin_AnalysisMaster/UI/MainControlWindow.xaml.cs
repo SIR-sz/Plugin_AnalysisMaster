@@ -8,6 +8,7 @@ using System.IO;
 using System.Reflection;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Forms; // 用于 DialogResult
 using System.Windows.Media;
 using AcApp = Autodesk.AutoCAD.ApplicationServices.Application;
 
@@ -18,8 +19,6 @@ namespace Plugin_AnalysisMaster.UI
         private AnalysisStyle _currentStyle = new AnalysisStyle();
         private static MainControlWindow _instance;
 
-        // ✨ 修复 CS0117：提供 MainTool.cs 调用的静态入口
-        // ✨ 修复 CS0117：提供静态入口
         public static void ShowTool()
         {
             if (_instance == null || !_instance.IsLoaded)
@@ -37,9 +36,10 @@ namespace Plugin_AnalysisMaster.UI
             this.Loaded += (s, e) => { SyncStyleFromUI(); UpdatePreview(); };
         }
 
-        // ✨ 修复 CS0117：AutoCAD 2015 兼容的文件读取逻辑
         private void LoadPatternLibrary()
         {
+            if (BlockLibraryCombo == null) return;
+            BlockLibraryCombo.Items.Clear();
             string dllPath = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
             string libPath = Path.Combine(dllPath, "Assets", "PatternLibrary.dwg");
 
@@ -47,7 +47,6 @@ namespace Plugin_AnalysisMaster.UI
             {
                 using (Database db = new Database(false, true))
                 {
-                    // ✨ 修复：2015 版应使用 OpenForReadAndReadShare
                     db.ReadDwgFile(libPath, FileOpenMode.OpenForReadAndReadShare, true, "");
                     using (var tr = db.TransactionManager.StartTransaction())
                     {
@@ -63,24 +62,34 @@ namespace Plugin_AnalysisMaster.UI
             if (BlockLibraryCombo.Items.Count > 0) BlockLibraryCombo.SelectedIndex = 0;
         }
 
+        // ✨ 完整修复：同步所有滑块数值到样式模型
         private void SyncStyleFromUI()
         {
             if (PathTypeCombo == null) return;
             var item = (ComboBoxItem)PathTypeCombo.SelectedItem;
             _currentStyle.PathType = (PathCategory)Enum.Parse(typeof(PathCategory), item.Tag.ToString());
+
+            // 物理宽度
             _currentStyle.StartWidth = StartWidthSlider?.Value ?? 1.0;
+            _currentStyle.MidWidth = MidWidthSlider?.Value ?? 0.8;
             _currentStyle.EndWidth = EndWidthSlider?.Value ?? 0.5;
-            _currentStyle.ArrowSize = ArrowSizeSlider?.Value ?? 8.0;
+
+            // 阵列参数
             _currentStyle.SelectedBlockName = BlockLibraryCombo?.SelectedItem?.ToString() ?? "";
             _currentStyle.PatternSpacing = SpacingSlider?.Value ?? 10.0;
+            _currentStyle.PatternScale = PatternScaleSlider?.Value ?? 1.0;
+
+            // 端头
+            _currentStyle.ArrowSize = ArrowSizeSlider?.Value ?? 8.0;
+            _currentStyle.Transparency = TransSlider?.Value ?? 0;
         }
 
-        // ✨ 修复 CS0176：正确访问 Visibility 静态值
         private void OnPathTypeChanged(object sender, SelectionChangedEventArgs e)
         {
             if (!this.IsLoaded) return;
             SyncStyleFromUI();
 
+            // ✨ 修复静态引用：使用全限定名
             if (SolidPanel != null)
                 SolidPanel.Visibility = (_currentStyle.PathType == PathCategory.Solid)
                     ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
@@ -100,29 +109,25 @@ namespace Plugin_AnalysisMaster.UI
             finally { this.Show(); }
         }
 
-        // ✨ 修复：确保在 AddAllowedClass 之前调用 SetRejectMessage
+        // ✨ 修复：确保在 AddAllowedClass 之前调用 SetRejectMessage 避免崩溃
         private void PickBlock_Click(object sender, RoutedEventArgs e)
         {
-            var doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
+            var doc = AcApp.DocumentManager.MdiActiveDocument;
             if (doc == null) return;
 
             this.Hide();
             try
             {
-                var opt = new Autodesk.AutoCAD.EditorInput.PromptEntityOptions("\n请选择图中的块作为样式单元: ");
-
-                // ✨ 核心修复：必须先设置拒绝消息，否则 AddAllowedClass 会报错
+                var opt = new PromptEntityOptions("\n请选择图中的块作为样式单元: ");
                 opt.SetRejectMessage("\n所选对象不是块参照，请重新选择！");
-                opt.AddAllowedClass(typeof(Autodesk.AutoCAD.DatabaseServices.BlockReference), true);
+                opt.AddAllowedClass(typeof(BlockReference), true);
 
                 var res = doc.Editor.GetEntity(opt);
-                if (res.Status == Autodesk.AutoCAD.EditorInput.PromptStatus.OK)
+                if (res.Status == PromptStatus.OK)
                 {
                     using (var tr = doc.Database.TransactionManager.StartTransaction())
                     {
-                        var br = (Autodesk.AutoCAD.DatabaseServices.BlockReference)tr.GetObject(res.ObjectId, Autodesk.AutoCAD.DatabaseServices.OpenMode.ForRead);
-
-                        // 将拾取的块名同步到 UI 和样式模型
+                        var br = (BlockReference)tr.GetObject(res.ObjectId, OpenMode.ForRead);
                         _currentStyle.CustomBlockName = br.Name;
                         if (BlockLibraryCombo != null)
                         {
@@ -141,10 +146,43 @@ namespace Plugin_AnalysisMaster.UI
             }
         }
 
-        private void UpdatePreview() { /* 保持原有 PreviewCanvas 绘图逻辑 */ }
+        private void UpdatePreview() { /* 保持 Canvas 预览逻辑 */ }
         private void OnParamChanged(object sender, RoutedPropertyChangedEventArgs<double> e) { if (this.IsLoaded) UpdatePreview(); }
         private void OnParamChanged(object sender, SelectionChangedEventArgs e) { if (this.IsLoaded) UpdatePreview(); }
-        private void SelectColor_Click(object sender, System.Windows.Input.MouseButtonEventArgs e) { }
+        // ✨ 实现：点击颜色预览块，弹出 AutoCAD 标准颜色选择对话框
+        private void SelectColor_Click(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            // 1. 初始化 AutoCAD 颜色对话框
+            Autodesk.AutoCAD.Windows.ColorDialog colorDlg = new Autodesk.AutoCAD.Windows.ColorDialog();
+
+            // 2. 设置对话框的初始颜色
+            colorDlg.Color = Autodesk.AutoCAD.Colors.Color.FromRgb(
+                _currentStyle.MainColor.R,
+                _currentStyle.MainColor.G,
+                _currentStyle.MainColor.B);
+
+            // 3. 显示对话框
+            if (colorDlg.ShowDialog() == System.Windows.Forms.DialogResult.OK)
+            {
+                // 4. 获取选中的颜色 (System.Drawing.Color)
+                System.Drawing.Color selectedColor = colorDlg.Color.ColorValue;
+
+                // 5. 更新数据模型
+                _currentStyle.MainColor = System.Windows.Media.Color.FromRgb(
+                    selectedColor.R,
+                    selectedColor.G,
+                    selectedColor.B);
+
+                // 6. 更新 UI 预览块的颜色
+                if (ColorPreview != null)
+                {
+                    ColorPreview.Fill = new SolidColorBrush(_currentStyle.MainColor);
+                }
+
+                // 7. 实时更新预览 Canvas
+                UpdatePreview();
+            }
+        }
         private void Close_Click(object sender, RoutedEventArgs e) => this.Close();
     }
 }

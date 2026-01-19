@@ -8,6 +8,18 @@
             <Setter Property="Foreground" Value="#BBB"/>
         </Style>
 
+        <Style x:Key="ValueInputStyle" TargetType="TextBox">
+            <Setter Property="Background" Value="#2D2D2D"/>
+            <Setter Property="Foreground" Value="#2196F3"/>
+            <Setter Property="BorderBrush" Value="#444"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="TextAlignment" Value="Right"/>
+            <Setter Property="Margin" Value="5,0,0,0"/>
+            <Setter Property="Padding" Value="2"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="FontSize" Value="11"/>
+        </Style>
+
         <Style TargetType="GroupBox">
             <Setter Property="BorderBrush" Value="#444"/>
             <Setter Property="BorderThickness" Value="1"/>
@@ -128,30 +140,28 @@
                             <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="40"/>
+                                    <ColumnDefinition Width="60"/>
                                 </Grid.ColumnDefinitions>
-                                <Slider x:Name="StartWidthSlider" Minimum="0.1" Maximum="20" Value="1.0" ValueChanged="OnParamChanged"/>
-                                <TextBlock Grid.Column="1" Text="{Binding ElementName=StartWidthSlider, Path=Value, StringFormat={}{0:F1}}" Foreground="#2196F3" VerticalAlignment="Center" TextAlignment="Right"/>
+                                <Slider x:Name="StartWidthSlider" Minimum="0.1" Maximum="10000" Value="1.0" ValueChanged="OnParamChanged"/>
+                                <TextBox Grid.Column="1" Text="{Binding ElementName=StartWidthSlider, Path=Value, UpdateSourceTrigger=PropertyChanged, StringFormat={}{0:F1}}" Style="{StaticResource ValueInputStyle}"/>
                             </Grid>
-
                             <TextBlock Text="中点宽度" FontSize="11" Margin="0,5,0,0"/>
                             <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="40"/>
+                                    <ColumnDefinition Width="60"/>
                                 </Grid.ColumnDefinitions>
-                                <Slider x:Name="MidWidthSlider" Minimum="0.1" Maximum="20" Value="0.8" ValueChanged="OnParamChanged"/>
-                                <TextBlock Grid.Column="1" Text="{Binding ElementName=MidWidthSlider, Path=Value, StringFormat={}{0:F1}}" Foreground="#2196F3" VerticalAlignment="Center" TextAlignment="Right"/>
+                                <Slider x:Name="MidWidthSlider" Minimum="0.1" Maximum="10000" Value="0.8" ValueChanged="OnParamChanged"/>
+                                <TextBox Grid.Column="1" Text="{Binding ElementName=MidWidthSlider, Path=Value, UpdateSourceTrigger=PropertyChanged, StringFormat={}{0:F1}}" Style="{StaticResource ValueInputStyle}"/>
                             </Grid>
-
                             <TextBlock Text="终点宽度" FontSize="11" Margin="0,5,0,0"/>
                             <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="40"/>
+                                    <ColumnDefinition Width="60"/>
                                 </Grid.ColumnDefinitions>
-                                <Slider x:Name="EndWidthSlider" Minimum="0.1" Maximum="20" Value="0.5" ValueChanged="OnParamChanged"/>
-                                <TextBlock Grid.Column="1" Text="{Binding ElementName=EndWidthSlider, Path=Value, StringFormat={}{0:F1}}" Foreground="#2196F3" VerticalAlignment="Center" TextAlignment="Right"/>
+                                <Slider x:Name="EndWidthSlider" Minimum="0.1" Maximum="10000" Value="0.5" ValueChanged="OnParamChanged"/>
+                                <TextBox Grid.Column="1" Text="{Binding ElementName=EndWidthSlider, Path=Value, UpdateSourceTrigger=PropertyChanged, StringFormat={}{0:F1}}" Style="{StaticResource ValueInputStyle}"/>
                             </Grid>
                         </StackPanel>
                     </GroupBox>
@@ -167,25 +177,23 @@
                                 <ComboBox x:Name="BlockLibraryCombo" SelectionChanged="OnParamChanged"/>
                                 <Button Grid.Column="1" Content="拾取" Click="PickBlock_Click" Width="45" Margin="5,0,0,0" Background="#3D3D3D" Foreground="#EEE" BorderBrush="#555"/>
                             </Grid>
-
                             <TextBlock Text="排列间距" FontSize="11" Margin="0,5,0,0"/>
                             <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="40"/>
+                                    <ColumnDefinition Width="60"/>
                                 </Grid.ColumnDefinitions>
-                                <Slider x:Name="SpacingSlider" Minimum="1" Maximum="100" Value="10" ValueChanged="OnParamChanged"/>
-                                <TextBlock Grid.Column="1" Text="{Binding ElementName=SpacingSlider, Path=Value, StringFormat={}{0:F0}}" Foreground="#2196F3" VerticalAlignment="Center" TextAlignment="Right"/>
+                                <Slider x:Name="SpacingSlider" Minimum="1" Maximum="10000" Value="10" ValueChanged="OnParamChanged"/>
+                                <TextBox Grid.Column="1" Text="{Binding ElementName=SpacingSlider, Path=Value, UpdateSourceTrigger=PropertyChanged, StringFormat={}{0:F0}}" Style="{StaticResource ValueInputStyle}"/>
                             </Grid>
-
-                            <TextBlock Text="线型比例" FontSize="11" Margin="0,5,0,0"/>
+                            <TextBlock Text="单元缩放" FontSize="11" Margin="0,5,0,0"/>
                             <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="40"/>
+                                    <ColumnDefinition Width="60"/>
                                 </Grid.ColumnDefinitions>
-                                <Slider x:Name="LtScaleSlider" Minimum="0.1" Maximum="10" Value="1.0" ValueChanged="OnParamChanged"/>
-                                <TextBlock Grid.Column="1" Text="{Binding ElementName=LtScaleSlider, Path=Value, StringFormat={}{0:F1}}" Foreground="#2196F3" VerticalAlignment="Center" TextAlignment="Right"/>
+                                <Slider x:Name="PatternScaleSlider" Minimum="0.1" Maximum="1000" Value="1.0" ValueChanged="OnParamChanged"/>
+                                <TextBox Grid.Column="1" Text="{Binding ElementName=PatternScaleSlider, Path=Value, UpdateSourceTrigger=PropertyChanged, StringFormat={}{0:F1}}" Style="{StaticResource ValueInputStyle}"/>
                             </Grid>
                         </StackPanel>
                     </GroupBox>
@@ -208,10 +216,10 @@
                             <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="40"/>
+                                    <ColumnDefinition Width="60"/>
                                 </Grid.ColumnDefinitions>
-                                <Slider x:Name="ArrowSizeSlider" Minimum="1" Maximum="50" Value="8" ValueChanged="OnParamChanged"/>
-                                <TextBlock Grid.Column="1" Text="{Binding ElementName=ArrowSizeSlider, Path=Value, StringFormat={}{0:F0}}" Foreground="#2196F3" VerticalAlignment="Center" TextAlignment="Right"/>
+                                <Slider x:Name="ArrowSizeSlider" Minimum="1" Maximum="5000" Value="8" ValueChanged="OnParamChanged"/>
+                                <TextBox Grid.Column="1" Text="{Binding ElementName=ArrowSizeSlider, Path=Value, UpdateSourceTrigger=PropertyChanged, StringFormat={}{0:F0}}" Style="{StaticResource ValueInputStyle}"/>
                             </Grid>
                         </StackPanel>
                     </GroupBox>
@@ -224,10 +232,10 @@
                             <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="40"/>
+                                    <ColumnDefinition Width="60"/>
                                 </Grid.ColumnDefinitions>
                                 <Slider x:Name="TransSlider" Minimum="0" Maximum="100" Value="0" ValueChanged="OnParamChanged"/>
-                                <TextBlock Grid.Column="1" Text="{Binding ElementName=TransSlider, Path=Value, StringFormat={}{0:F0}}" Foreground="#2196F3" VerticalAlignment="Center" TextAlignment="Right"/>
+                                <TextBox Grid.Column="1" Text="{Binding ElementName=TransSlider, Path=Value, UpdateSourceTrigger=PropertyChanged, StringFormat={}{0:F0}}" Style="{StaticResource ValueInputStyle}"/>
                             </Grid>
                         </StackPanel>
                     </GroupBox>
