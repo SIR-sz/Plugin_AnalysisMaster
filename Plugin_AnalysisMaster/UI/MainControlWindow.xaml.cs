@@ -26,19 +26,24 @@ namespace Plugin_AnalysisMaster.UI
         }
 
         // ✨ 修改后的构造函数
+        // 请替换完整的构造函数
         public MainControlWindow()
         {
             InitializeComponent();
 
-            // 1. 初始化模型实例
             _currentStyle = new AnalysisStyle();
 
-            // 2. 核心修复：注册 Loaded 事件，在窗口完全加载后执行第一次同步
+            // 注册加载事件进行初始同步
             this.Loaded += (s, e) =>
             {
-                SyncStyleFromUI(); // 确保 Slider 的初始值（如 1.0）被同步到模型
-                UpdatePreview();   // 更新预览图
+                SyncStyleFromUI();
+                UpdatePreview();
             };
+
+            // ✨ 移除对 SegmentStyleCombo 的引用，保留现有的初始化
+            if (StartCapCombo != null) StartCapCombo.SelectedIndex = 0;
+            if (PathTypeCombo != null) PathTypeCombo.SelectedIndex = 1; // 默认为 Solid
+            if (EndCapCombo != null) EndCapCombo.SelectedIndex = 0;
         }
 
         // ✨ 核心方法：参数改变触发预览更新
@@ -62,8 +67,7 @@ namespace Plugin_AnalysisMaster.UI
         }
 
         // ✨ 商业化预览逻辑：在 Canvas 上模拟绘制动线
-        // ✨ 商业级实时预览逻辑：完整模拟[起点+中间+终点]的组合效果
-        // ✨ 完整的预览方法：在画布上绘制具有渐变宽度的“皮肤”线
+        // ✨ 完善后的预览方法：支持虚线比例实时预览
         private void UpdatePreview()
         {
             if (PreviewCanvas == null || _currentStyle == null) return;
@@ -73,23 +77,46 @@ namespace Plugin_AnalysisMaster.UI
             double centerY = PreviewCanvas.Height / 2;
             double startX = 60;
             double endX = 240;
+            double m = 4.0; // 预览视觉缩放倍数
 
-            // 1. 绘制主体路径预览 (模拟骨架与皮肤的关系)
-            // 使用 Polygon 模拟从 StartWidth 到 EndWidth 的物理变化
-            Polygon body = new Polygon { Fill = brush, Opacity = 0.8 };
+            if (_currentStyle.PathType == PathCategory.Dashed)
+            {
+                // 1. 虚线预览：动态计算虚线数组
+                // 将 LtScaleSlider 的值映射到 WPF 的 DashArray
+                // 基准值设为 3和2，随 LinetypeScale 线性缩放
+                double dashValue = 3 * _currentStyle.LinetypeScale;
+                double gapValue = 2 * _currentStyle.LinetypeScale;
 
-            // 放大比例以在预览中可见 (4-5倍较合适)
-            double w1 = _currentStyle.StartWidth * 4;
-            double w2 = _currentStyle.EndWidth * 4;
+                Path dashedPath = new Path
+                {
+                    Stroke = brush,
+                    StrokeThickness = (_currentStyle.StartWidth + _currentStyle.EndWidth) / 2 * m,
+                    // ✨ 关键点：动态绑定比例
+                    StrokeDashArray = new DoubleCollection { dashValue, gapValue },
+                    Data = new LineGeometry(new Point(startX, centerY), new Point(endX, centerY)),
+                    Opacity = 0.8
+                };
+                PreviewCanvas.Children.Add(dashedPath);
+            }
+            else if (_currentStyle.PathType == PathCategory.Solid)
+            {
+                // 2. 实线预览：贝塞尔宽度模拟
+                Polygon body = new Polygon { Fill = brush, Opacity = 0.8 };
+                double wStart = _currentStyle.StartWidth * m;
+                double wMid = _currentStyle.MidWidth * m;
+                double wEnd = _currentStyle.EndWidth * m;
+                double midX = (startX + endX) / 2;
 
-            body.Points.Add(new Point(startX, centerY - w1));
-            body.Points.Add(new Point(endX, centerY - w2));
-            body.Points.Add(new Point(endX, centerY + w2));
-            body.Points.Add(new Point(startX, centerY + w1));
+                body.Points.Add(new Point(startX, centerY - wStart));
+                body.Points.Add(new Point(midX, centerY - wMid));
+                body.Points.Add(new Point(endX, centerY - wEnd));
+                body.Points.Add(new Point(endX, centerY + wEnd));
+                body.Points.Add(new Point(midX, centerY + wMid));
+                body.Points.Add(new Point(startX, centerY + wStart));
+                PreviewCanvas.Children.Add(body);
+            }
 
-            PreviewCanvas.Children.Add(body);
-
-            // 2. 绘制终点端头 (End Cap)
+            // 绘制端头逻辑
             double s = _currentStyle.ArrowSize;
             if (_currentStyle.EndCapStyle != ArrowHeadType.None)
             {
@@ -100,7 +127,6 @@ namespace Plugin_AnalysisMaster.UI
                 PreviewCanvas.Children.Add(head);
             }
 
-            // 3. 绘制起点端头 (Start Cap)
             if (_currentStyle.StartCapStyle == ArrowHeadType.Circle)
             {
                 Ellipse dot = new Ellipse { Fill = brush, Width = 8, Height = 8 };
@@ -111,35 +137,38 @@ namespace Plugin_AnalysisMaster.UI
         }
 
         // ✨ 修复 NullReferenceException 并实现三段式参数同步
-        // ✨ 核心逻辑：将 UI 上的起点、终点宽度同步到模型
-        // ✨ 完整的同步方法：支持三组参数并修复透明度引用
+        // 请替换完整的 SyncStyleFromUI 方法
         private void SyncStyleFromUI()
         {
             if (_currentStyle == null) _currentStyle = new AnalysisStyle();
 
-            // 严谨的空检查：确保所有涉及到的 UI 控件都已实例化
+            // 严谨的空检查，去掉了已不存在的 SegmentStyleCombo
             if (SizeSlider == null || StartWidthSlider == null || EndWidthSlider == null ||
-                TransSlider == null || StartCapCombo == null || EndCapCombo == null)
+                TransSlider == null || StartCapCombo == null || EndCapCombo == null ||
+                PathTypeCombo == null || MidWidthSlider == null || LtScaleSlider == null)
                 return;
 
             // 1. 同步端头尺寸
             _currentStyle.ArrowSize = SizeSlider.Value;
 
-            // 2. 同步起点/终点物理宽度
+            // 2. 同步物理宽度
             _currentStyle.StartWidth = StartWidthSlider.Value;
             _currentStyle.EndWidth = EndWidthSlider.Value;
+            _currentStyle.MidWidth = MidWidthSlider.Value;
 
-            // 3. 同步组合样式 (起点端头、路径类型、终点端头)
+            // 3. 同步组合样式
             if (StartCapCombo.SelectedIndex != -1)
                 _currentStyle.StartCapStyle = (ArrowHeadType)StartCapCombo.SelectedIndex;
 
             if (EndCapCombo.SelectedIndex != -1)
                 _currentStyle.EndCapStyle = (ArrowHeadType)EndCapCombo.SelectedIndex;
 
-            if (SegmentStyleCombo != null && SegmentStyleCombo.SelectedIndex != -1)
-                _currentStyle.LineType = (LineStyleType)SegmentStyleCombo.SelectedIndex;
+            // ✨ 使用 PathTypeCombo 控制路径分类
+            if (PathTypeCombo.SelectedIndex != -1)
+                _currentStyle.PathType = (PathCategory)PathTypeCombo.SelectedIndex;
 
-            // 4. 同步透明度 (修复 CS0103)
+            // 4. 同步其他参数
+            _currentStyle.LinetypeScale = LtScaleSlider.Value;
             _currentStyle.Transparency = TransSlider.Value;
         }
 

@@ -49,12 +49,19 @@
                     <ComboBoxItem Content="Swallow (逆向燕尾)"/>
                 </ComboBox>
 
-                <TextBlock Text="路径样式 (Segment)" Foreground="#AAA" FontSize="11" Margin="0,8,0,0"/>
-                <ComboBox Name="SegmentStyleCombo" Margin="0,5" SelectionChanged="OnParamChanged">
-                    <ComboBoxItem Content="Solid (实线)"/>
-                    <ComboBoxItem Content="Tapered (渐细线)"/>
-                    <ComboBoxItem Content="Dashed (虚线)"/>
+                <TextBlock Text="路径样式 (Path Category)" Foreground="#AAA" FontSize="11" Margin="0,8,0,0"/>
+                <ComboBox Name="PathTypeCombo" Margin="0,5" SelectionChanged="OnParamChanged">
+                    <ComboBoxItem Content="None (不生成路径)"/>
+                    <ComboBoxItem Content="Solid (实线类)"/>
+                    <ComboBoxItem Content="Dashed (虚线类)"/>
+                    <ComboBoxItem Content="Pattern (自定义图案-待开发)"/>
                 </ComboBox>
+
+                <TextBlock Text="腰部宽度 (Mid Width)" Foreground="#AAA" FontSize="11" Margin="0,10,0,0"/>
+                <Slider Name="MidWidthSlider" Minimum="0.1" Maximum="15" Value="0.8" ValueChanged="OnParamChanged"/>
+
+                <TextBlock Text="线型比例 (LT Scale)" Foreground="#AAA" FontSize="11" Margin="0,10,0,0"/>
+                <Slider Name="LtScaleSlider" Minimum="0.1" Maximum="10" Value="1.0" ValueChanged="OnParamChanged"/>
 
                 <TextBlock Text="终点端头 (End Cap)" Foreground="#AAA" FontSize="11" Margin="0,8,0,0"/>
                 <ComboBox Name="EndCapCombo" Margin="0,5" SelectionChanged="OnParamChanged">
