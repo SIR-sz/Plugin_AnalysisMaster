@@ -65,20 +65,30 @@
 
                 <TextBlock Text="参数微调 (Refinement)" Style="{StaticResource SectionHeader}"/>
 
-                <Grid>
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="*"/>
-                    </Grid.ColumnDefinitions>
-                    <StackPanel Margin="0,0,5,0">
-                        <TextBlock Text="端头尺寸" Foreground="#AAA" FontSize="11"/>
-                        <Slider Name="SizeSlider" Minimum="1" Maximum="30" Value="8" ValueChanged="OnParamChanged"/>
-                    </StackPanel>
-                    <StackPanel Grid.Column="1" Margin="5,0,0,0">
-                        <TextBlock Text="线段粗细" Foreground="#AAA" FontSize="11"/>
-                        <Slider Name="WeightSlider" Minimum="0.1" Maximum="5" Value="0.8" ValueChanged="OnParamChanged"/>
-                    </StackPanel>
-                </Grid>
+                <StackPanel>
+                    <TextBlock Text="端头尺寸 (Cap Size)" Foreground="#AAA" FontSize="11"/>
+                    <Slider Name="SizeSlider" Minimum="1" Maximum="30" Value="8" ValueChanged="OnParamChanged"/>
+
+                    <Grid Margin="0,10,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+
+                        <StackPanel Margin="0,0,5,0">
+                            <TextBlock Text="起点宽度 (Start W)" Foreground="#AAA" FontSize="11"/>
+                            <Slider Name="StartWidthSlider" Minimum="0.1" Maximum="10" Value="1.0" ValueChanged="OnParamChanged"/>
+                        </StackPanel>
+
+                        <StackPanel Grid.Column="1" Margin="5,0,0,0">
+                            <TextBlock Text="终点宽度 (End W)" Foreground="#AAA" FontSize="11"/>
+                            <Slider Name="EndWidthSlider" Minimum="0.1" Maximum="10" Value="0.5" ValueChanged="OnParamChanged"/>
+                        </StackPanel>
+                    </Grid>
+
+                    <TextBlock Text="透明度 (Transparency)" Foreground="#AAA" FontSize="11" Margin="0,10,0,0"/>
+                    <Slider Name="TransSlider" Minimum="0" Maximum="255" Value="0" ValueChanged="OnParamChanged"/>
+                </StackPanel>
 
                 <TextBlock Text="颜色选择" Foreground="#AAA" FontSize="11" Margin="0,10,0,5"/>
                 <UniformGrid Columns="5" Name="ColorGrid">

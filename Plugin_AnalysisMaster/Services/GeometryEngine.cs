@@ -14,7 +14,7 @@ namespace Plugin_AnalysisMaster.Services
         /// <summary>
         /// 核心入口：参数化生成动线
         /// </summary>
-        // ✨ 替换 DrawAnalysisLine：实现头、尾、路径的完全解构
+        // ✨ 核心入口：实现“骨架+皮肤”的参数化生成
         public static void DrawAnalysisLine(Point3dCollection points, AnalysisStyle style)
         {
             if (points == null || points.Count < 2) return;
@@ -28,25 +28,31 @@ namespace Plugin_AnalysisMaster.Services
                     EnsureLayer(db, tr, style);
                     BlockTableRecord btr = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
 
+                    // 1. 生成样条控制曲线（骨架路径）
                     Curve path = CreatePathCurve(points, style.IsCurved);
                     using (path)
                     {
-                        // 获取切线方向
                         Vector3d headDir = path.GetFirstDerivative(path.EndParam).GetNormal();
                         Vector3d tailDir = path.GetFirstDerivative(path.StartParam).GetNormal().Negate();
 
-                        // 计算头尾顶点（现在独立受 StartCapStyle 和 EndCapStyle 控制）
+                        // 2. 计算独立的头尾几何顶点
                         Point3dCollection headPts = CalculateFeaturePoints(path.EndPoint, headDir, style, true);
                         Point3dCollection tailPts = CalculateFeaturePoints(path.StartPoint, tailDir, style, false);
 
-                        // 物理缩进逻辑
-                        double headIndent = (style.EndCapStyle == ArrowHeadType.None) ? 0 : style.ArrowSize;
-                        double tailIndent = (style.StartCapStyle == ArrowHeadType.None) ? 0 : style.ArrowSize * 0.5;
+                        // 3. 计算物理缩进
+                        double headIndent = (style.EndCapStyle == ArrowHeadType.None) ? 0 : style.ArrowSize * 0.8;
+                        double tailIndent = (style.StartCapStyle == ArrowHeadType.None) ? 0 : style.ArrowSize * 0.4;
 
-                        Curve bodyCurve = TrimPath(path, headIndent, tailIndent);
-                        if (bodyCurve != null) RenderBody(btr, tr, bodyCurve, style);
+                        Curve trimmedPath = TrimPath(path, headIndent, tailIndent);
 
-                        // 渲染独立的头尾
+                        // 4. 执行“骨架与皮肤”渲染
+                        if (trimmedPath != null)
+                        {
+                            RenderBody(btr, tr, trimmedPath, style);
+                            if (trimmedPath != path) trimmedPath.Dispose();
+                        }
+
+                        // 5. 渲染独立的端头填充
                         if (headPts.Count > 0) RenderFeature(btr, tr, headPts, style);
                         if (tailPts.Count > 0) RenderFeature(btr, tr, tailPts, style);
                     }
@@ -135,33 +141,58 @@ namespace Plugin_AnalysisMaster.Services
         #region 实体渲染引擎 (Rendering)
 
         // ✨ 替换 RenderBody：支持前后宽度不一的渐变线
+
         private static void RenderBody(BlockTableRecord btr, Transaction tr, Curve curve, AnalysisStyle style)
         {
-            if (curve is Polyline pl)
+            Database db = btr.Database;
+
+            // 1. 生成“皮肤”：高密度、带宽度渐变的多段线
+            double totalLen = curve.GetDistanceAtParameter(curve.EndParam);
+            double segmentLen = style.ArrowSize * 0.5;
+            int numSegments = (int)Math.Max(totalLen / segmentLen, 30); // 增加采样密度提高平滑度
+
+            using (Polyline visualSkin = new Polyline())
             {
-                // 赋予多段线渐变宽度
-                for (int i = 0; i < pl.NumberOfVertices; i++)
+                for (int i = 0; i <= numSegments; i++)
                 {
-                    pl.SetStartWidthAt(i, style.StartWidth);
-                    pl.SetEndWidthAt(i, style.EndWidth);
+                    double currentDist = (totalLen / numSegments) * i;
+                    Point3d pt = curve.GetPointAtDist(currentDist);
+                    visualSkin.AddVertexAt(i, new Point2d(pt.X, pt.Y), 0, 0, 0);
+
+                    if (i < numSegments)
+                    {
+                        double progress = (double)i / numSegments;
+                        double nextProgress = (double)(i + 1) / numSegments;
+
+                        double startW = style.StartWidth + (style.EndWidth - style.StartWidth) * progress;
+                        double endW = style.StartWidth + (style.EndWidth - style.StartWidth) * nextProgress;
+
+                        visualSkin.SetStartWidthAt(i, startW);
+                        visualSkin.SetEndWidthAt(i, endW);
+                    }
                 }
+                AddToDb(btr, tr, visualSkin, style);
             }
 
-            // 如果是双线模式，则进行偏移处理
-            if (style.LineType == LineStyleType.DoubleLine)
+            // 2. 生成“骨架”：作为控制参考的样条曲线
+            Entity skeleton = (Entity)curve.Clone();
+
+            // ✨ 修复崩溃：检查线型是否存在，不存在则跳过或使用默认
+            LinetypeTable lt = (LinetypeTable)tr.GetObject(db.LinetypeTableId, OpenMode.ForRead);
+            if (lt.Has("HIDDEN"))
             {
-                double offset = style.LineWeight * 5.0;
-                foreach (double d in new double[] { offset, -offset })
-                {
-                    var offsets = curve.GetOffsetCurves(d);
-                    foreach (Entity ent in offsets) AddToDb(btr, tr, ent, style);
-                }
-                curve.Dispose();
+                skeleton.Linetype = "HIDDEN";
             }
-            else
+            else if (lt.Has("DASHED"))
             {
-                AddToDb(btr, tr, curve, style);
+                skeleton.Linetype = "DASHED";
             }
+
+            // 设置骨架为淡灰色 (颜色索引 253)，并提高透明度，使其看起来更像辅助线
+            skeleton.Color = Autodesk.AutoCAD.Colors.Color.FromColorIndex(Autodesk.AutoCAD.Colors.ColorMethod.ByAci, 253);
+            skeleton.Transparency = new Transparency(180);
+
+            AddToDb(btr, tr, skeleton, style);
         }
 
         private static void RenderFeature(BlockTableRecord btr, Transaction tr, Point3dCollection pts, AnalysisStyle style)
