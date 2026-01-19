@@ -22,34 +22,28 @@ namespace Plugin_AnalysisMaster.Services
             Editor ed = doc.Editor;
             Point3dCollection points = inputPoints;
 
-            // 1. 交互式点位获取 (实现连续点击逻辑)
+            // 1. 交互式点位获取
             if (points == null)
             {
                 PromptPointOptions ppo = new PromptPointOptions("\n指定起点: ");
                 PromptPointResult ppr = ed.GetPoint(ppo);
                 if (ppr.Status != PromptStatus.OK) return;
 
-                // 初始化预览 Jig
                 var jig = new AnalysisLineJig(ppr.Value, style);
-
-                // ✨ 核心逻辑：循环拾取点位，直到按下 Enter
                 while (true)
                 {
                     var res = ed.Drag(jig);
                     if (res.Status == PromptStatus.OK)
                     {
-                        // 用户点击左键：确定当前点，并继续下一段预览
                         jig.GetPoints().Add(jig.LastPoint);
                     }
                     else if (res.Status == PromptStatus.None)
                     {
-                        // 用户按回车或空格：结束拾取，加入最后一个预览点
                         jig.GetPoints().Add(jig.LastPoint);
                         break;
                     }
                     else
                     {
-                        // 取消操作
                         if (jig.GetPoints().Count < 2) return;
                         break;
                     }
@@ -72,9 +66,12 @@ namespace Plugin_AnalysisMaster.Services
                     Curve path = CreatePathCurve(points, style.IsCurved);
                     using (path)
                     {
-                        // 计算端头缩进，防止线体穿透箭头
-                        double headIndent = (style.EndCapStyle == ArrowHeadType.None) ? 0 : style.ArrowSize * 0.8;
-                        double tailIndent = (style.StartCapStyle == ArrowHeadType.None) ? 0 : style.ArrowSize * 0.4;
+                        // ✨ 修复 1：使用 StartArrowType 和 EndArrowType 字符串判断是否需要缩进，彻底解决“选无仍有”
+                        bool hasHead = !style.EndArrowType.Equals("None", StringComparison.OrdinalIgnoreCase);
+                        bool hasTail = !style.StartArrowType.Equals("None", StringComparison.OrdinalIgnoreCase);
+
+                        double headIndent = hasHead ? style.ArrowSize * 0.8 : 0;
+                        double tailIndent = hasTail ? style.ArrowSize * 0.4 : 0;
 
                         Curve trimmedPath = TrimPath(path, headIndent, tailIndent);
                         if (trimmedPath != null)
@@ -83,23 +80,12 @@ namespace Plugin_AnalysisMaster.Services
                             if (trimmedPath != path) trimmedPath.Dispose();
                         }
 
-                        // 渲染端头特征 (箭头或圆点)
-                        if (style.EndCapStyle != ArrowHeadType.None)
-                        {
-                            Vector3d headDir = path.GetFirstDerivative(path.EndParam).GetNormal();
-                            Point3dCollection headPts = CalculateFeaturePoints(path.EndPoint, headDir, style, true);
-                            RenderFeature(btr, tr, headPts, style, allIds);
-                        }
-
-                        if (style.StartCapStyle != ArrowHeadType.None)
-                        {
-                            Vector3d tailDir = path.GetFirstDerivative(path.StartParam).GetNormal().Negate();
-                            Point3dCollection tailPts = CalculateFeaturePoints(path.StartPoint, tailDir, style, false);
-                            RenderFeature(btr, tr, tailPts, style, allIds);
-                        }
+                        // ✨ 修复 2：调用修改后的渲染方法，并传入 allIds 以便正确打组
+                        RenderHead(btr, tr, path, style, allIds);
+                        RenderTail(btr, tr, path, style, allIds);
                     }
 
-                    // 自动打组：方便用户一键选中/删除整条动线
+                    // 自动打组
                     if (allIds.Count > 1)
                     {
                         DBDictionary gd = (DBDictionary)tr.GetObject(db.GroupDictionaryId, OpenMode.ForWrite);
@@ -196,9 +182,9 @@ namespace Plugin_AnalysisMaster.Services
                 }
             }
         }
-        private static void RenderHead(BlockTableRecord btr, Transaction tr, Curve curve, AnalysisStyle style)
+        private static void RenderHead(BlockTableRecord btr, Transaction tr, Curve curve, AnalysisStyle style, ObjectIdCollection ids)
         {
-            // 1. 拦截“无”选项
+            // 拦截“无”选项
             if (string.IsNullOrEmpty(style.StartArrowType) ||
                 style.StartArrowType.Equals("None", StringComparison.OrdinalIgnoreCase) ||
                 style.StartArrowType.Equals("无"))
@@ -206,36 +192,30 @@ namespace Plugin_AnalysisMaster.Services
                 return;
             }
 
-            // 2. 获取块定义 ID
             ObjectId blockId = GetOrImportBlock(style.StartArrowType, btr.Database, tr);
             if (blockId.IsNull) return;
 
-            // 3. 计算起点位置和切线角度
             Point3d startPt = curve.StartPoint;
-            // 获取起点处的导数（矢量），用于确定旋转方向
             Vector3d dir = curve.GetFirstDerivative(curve.StartParam).GetNormal();
 
             using (BlockReference br = new BlockReference(startPt, blockId))
             {
-                // 旋转角度：Atan2 将矢量转换为 CAD 弧度
-                // 注意：起点箭头通常需要反向（180度），如果你的块本身就是朝向终点的，可能需要 + Math.PI
                 br.Rotation = Math.Atan2(dir.Y, dir.X) + Math.PI;
+                // 使用 ArrowSize 控制端头大小
+                br.ScaleFactors = new Scale3d(style.ArrowSize);
 
-                br.ScaleFactors = new Scale3d(style.PatternScale);
-
-                // 同步 UI 颜色
                 br.Color = Autodesk.AutoCAD.Colors.Color.FromRgb(
                     style.MainColor.R,
                     style.MainColor.G,
                     style.MainColor.B);
 
-                // 调用你已有的 AddToDb 方法添加到图纸
-                AddToDb(btr, tr, br, style);
+                // 添加到数据库并记录 ID
+                ids.Add(AddToDb(btr, tr, br, style));
             }
         }
-        private static void RenderTail(BlockTableRecord btr, Transaction tr, Curve curve, AnalysisStyle style)
+        private static void RenderTail(BlockTableRecord btr, Transaction tr, Curve curve, AnalysisStyle style, ObjectIdCollection ids)
         {
-            // 1. 拦截“无”选项
+            // 拦截“无”选项
             if (string.IsNullOrEmpty(style.EndArrowType) ||
                 style.EndArrowType.Equals("None", StringComparison.OrdinalIgnoreCase) ||
                 style.EndArrowType.Equals("无"))
@@ -243,28 +223,23 @@ namespace Plugin_AnalysisMaster.Services
                 return;
             }
 
-            // 2. 获取块定义 ID
             ObjectId blockId = GetOrImportBlock(style.EndArrowType, btr.Database, tr);
             if (blockId.IsNull) return;
 
-            // 3. 计算终点位置和角度
             Point3d endPt = curve.EndPoint;
             Vector3d dir = curve.GetFirstDerivative(curve.EndParam).GetNormal();
 
             using (BlockReference br = new BlockReference(endPt, blockId))
             {
-                // 终点旋转角度通常直接跟随切线方向
                 br.Rotation = Math.Atan2(dir.Y, dir.X);
+                br.ScaleFactors = new Scale3d(style.ArrowSize);
 
-                br.ScaleFactors = new Scale3d(style.PatternScale);
-
-                // 同步 UI 颜色
                 br.Color = Autodesk.AutoCAD.Colors.Color.FromRgb(
                     style.MainColor.R,
                     style.MainColor.G,
                     style.MainColor.B);
 
-                AddToDb(btr, tr, br, style);
+                ids.Add(AddToDb(btr, tr, br, style));
             }
         }
         private static void RenderFeature(BlockTableRecord btr, Transaction tr, Point3dCollection pts, AnalysisStyle style, ObjectIdCollection idCol)

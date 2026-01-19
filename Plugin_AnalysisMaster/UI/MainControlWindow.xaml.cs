@@ -151,7 +151,13 @@ namespace Plugin_AnalysisMaster.UI
                     double t = i / 40.0;
                     System.Windows.Point pt1 = GetBezierPoint(t, p1, p2, p3);
                     System.Windows.Point pt2 = GetBezierPoint((i + 1.0) / 40.0, p1, p2, p3);
+
+                    // 计算真实宽度
                     double thickness = CalculateBezierWidth(t, _currentStyle.StartWidth, _currentStyle.MidWidth, _currentStyle.EndWidth);
+
+                    // ✨ 修复：视觉压缩逻辑。即使 CAD 里的宽度是 10000，预览里的最大厚度也限制在 40 像素，防止溢出
+                    double previewThickness = Math.Min(thickness * 0.05, 40);
+                    if (previewThickness < 1) previewThickness = 1;
 
                     Line line = new Line
                     {
@@ -160,7 +166,7 @@ namespace Plugin_AnalysisMaster.UI
                         X2 = pt2.X,
                         Y2 = pt2.Y,
                         Stroke = brush,
-                        StrokeThickness = thickness * 1.5,
+                        StrokeThickness = previewThickness,
                         StrokeStartLineCap = PenLineCap.Round,
                         StrokeEndLineCap = PenLineCap.Round
                     };
@@ -173,7 +179,7 @@ namespace Plugin_AnalysisMaster.UI
                 if (string.IsNullOrEmpty(blockName)) return;
 
                 SyncBlockToCurrentDoc(blockName);
-                ImageSource maskSource = GetBlockMaskSource(blockName); // 获取带透明度的遮罩
+                ImageSource maskSource = GetBlockMaskSource(blockName);
 
                 double step = 0.15;
                 for (double t = 0; t <= 1; t += step)
@@ -181,7 +187,6 @@ namespace Plugin_AnalysisMaster.UI
                     System.Windows.Point pt = GetBezierPoint(t, p1, p2, p3);
                     double imgSize = 22;
 
-                    // ✨ 使用 Rectangle + OpacityMask 实现变色效果
                     var colorRect = new System.Windows.Shapes.Rectangle
                     {
                         Width = imgSize,

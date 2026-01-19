@@ -11,7 +11,7 @@ using System.Windows.Media;
 namespace Plugin_AnalysisMaster
 {
     /// <summary>
-    /// 曲线大师插件入口
+    /// 动态曲线助手插件入口
     /// </summary>
     public class MainTool : ICadTool
     {
@@ -20,7 +20,7 @@ namespace Plugin_AnalysisMaster
 
         #region --- ICadTool 接口实现 ---
 
-        public string ToolName => "曲线大师"; // 显示在主面板上的名称
+        public string ToolName => "动态曲线助手"; // 显示在主面板上的名称
         public string IconCode => "\uE81C";      // 使用路径图标
         public string Description => "专业级动线、箭头与分析线绘制工具";
         public string Category { get; set; } = "绘图增强";
