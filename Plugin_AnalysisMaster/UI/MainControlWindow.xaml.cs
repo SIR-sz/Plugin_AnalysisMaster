@@ -10,7 +10,10 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Forms; // 用于 DialogResult
 using System.Windows.Media;
+using System.Windows.Shapes;
 using AcApp = Autodesk.AutoCAD.ApplicationServices.Application;
+using Ellipse = System.Windows.Shapes.Ellipse; // 默认将 Ellipse 指向 WPF 形状
+using Path = System.IO.Path; // 默认将 Path 指向文件路径工具
 
 namespace Plugin_AnalysisMaster.UI
 {
@@ -40,10 +43,10 @@ namespace Plugin_AnalysisMaster.UI
         {
             if (BlockLibraryCombo == null) return;
             BlockLibraryCombo.Items.Clear();
-            string dllPath = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
-            string libPath = Path.Combine(dllPath, "Assets", "PatternLibrary.dwg");
+            string dllPath = System.IO.Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
+            string libPath = System.IO.Path.Combine(dllPath, "Assets", "PatternLibrary.dwg");
 
-            if (File.Exists(libPath))
+            if (System.IO.File.Exists(libPath))
             {
                 using (Database db = new Database(false, true))
                 {
@@ -67,31 +70,23 @@ namespace Plugin_AnalysisMaster.UI
         {
             if (PathTypeCombo == null || _currentStyle == null) return;
 
-            // 同步路径模式
-            var pathItem = (ComboBoxItem)PathTypeCombo.SelectedItem;
-            if (pathItem != null)
-                _currentStyle.PathType = (PathCategory)Enum.Parse(typeof(PathCategory), pathItem.Tag.ToString());
+            var item = (ComboBoxItem)PathTypeCombo.SelectedItem;
+            if (item != null)
+                _currentStyle.PathType = (PathCategory)Enum.Parse(typeof(PathCategory), item.Tag.ToString());
 
-            // 同步端头样式
-            if (EndCapCombo != null && EndCapCombo.SelectedItem != null)
-            {
-                string capText = (EndCapCombo.SelectedItem as ComboBoxItem)?.Content.ToString();
-                _currentStyle.EndCapStyle = capText == "基础箭头" ? ArrowHeadType.Basic :
-                                            capText == "圆点" ? ArrowHeadType.Circle : ArrowHeadType.None;
-            }
-
-            // 同步数值参数
+            // 同步所有宽度和尺寸
             _currentStyle.StartWidth = StartWidthSlider?.Value ?? 1.0;
-            _currentStyle.MidWidth = MidWidthSlider?.Value ?? 0.8;
+            _currentStyle.MidWidth = MidWidthSlider?.Value ?? 0.8; // ✨ 补全
             _currentStyle.EndWidth = EndWidthSlider?.Value ?? 0.5;
             _currentStyle.ArrowSize = ArrowSizeSlider?.Value ?? 8.0;
 
-            // ✨ 同步选中的块名
+            // 同步阵列参数
             _currentStyle.SelectedBlockName = BlockLibraryCombo?.SelectedItem?.ToString() ?? "";
-
             _currentStyle.PatternSpacing = SpacingSlider?.Value ?? 10.0;
-            _currentStyle.PatternScale = PatternScaleSlider?.Value ?? 1.0;
-            _currentStyle.Transparency = TransSlider?.Value ?? 0;
+            _currentStyle.PatternScale = PatternScaleSlider?.Value ?? 1.0; // ✨ 补全
+
+            // 同步透明度
+            _currentStyle.Transparency = TransSlider?.Value ?? 0; // ✨ 补全
         }
 
         private void OnPathTypeChanged(object sender, SelectionChangedEventArgs e)
@@ -156,43 +151,34 @@ namespace Plugin_AnalysisMaster.UI
             }
         }
 
-        // ✨ 实现：预览窗口实时绘图逻辑
-        // ✨ 完整实现：实时刷新预览画布，支持实线渐变和阵列样式预览
         private void UpdatePreview()
         {
             if (PreviewCanvas == null || !this.IsLoaded) return;
-
-            // 1. 清空当前画布内容
             PreviewCanvas.Children.Clear();
 
-            double width = PreviewCanvas.ActualWidth;
-            double height = PreviewCanvas.ActualHeight;
-            if (width <= 0 || height <= 0) return;
+            double w = PreviewCanvas.ActualWidth;
+            double h = PreviewCanvas.ActualHeight;
+            if (w <= 0 || h <= 0) return;
 
-            // 2. 定义一段示意性的 S 型贝塞尔路径点
-            System.Windows.Point p1 = new System.Windows.Point(width * 0.1, height * 0.7);
-            System.Windows.Point p2 = new System.Windows.Point(width * 0.5, height * 0.1);
-            System.Windows.Point p3 = new System.Windows.Point(width * 0.9, height * 0.5);
+            // 1. 定义示意路径
+            System.Windows.Point p1 = new System.Windows.Point(w * 0.1, h * 0.7);
+            System.Windows.Point p2 = new System.Windows.Point(w * 0.5, h * 0.1);
+            System.Windows.Point p3 = new System.Windows.Point(w * 0.9, h * 0.5);
 
-            // 3. 准备画刷和透明度
             var brush = new SolidColorBrush(_currentStyle.MainColor);
             brush.Opacity = (100 - _currentStyle.Transparency) / 100.0;
 
-            // 4. 根据绘制模式渲染主体
+            // 2. 绘制主体
             if (_currentStyle.PathType == PathCategory.Solid)
             {
-                // 渲染连续实线：通过分段绘制模拟宽度渐变
-                int segments = 50;
+                int segments = 40;
                 for (int i = 0; i < segments; i++)
                 {
                     double t1 = i / (double)segments;
                     double t2 = (i + 1) / (double)segments;
-
                     System.Windows.Point pt1 = GetBezierPoint(t1, p1, p2, p3);
                     System.Windows.Point pt2 = GetBezierPoint(t2, p1, p2, p3);
-
-                    // 获取该进度下的贝塞尔插值宽度
-                    double w = CalculateBezierWidth(t1, _currentStyle.StartWidth, _currentStyle.MidWidth, _currentStyle.EndWidth);
+                    double thickness = CalculateBezierWidth(t1, _currentStyle.StartWidth, _currentStyle.MidWidth, _currentStyle.EndWidth);
 
                     var line = new System.Windows.Shapes.Line
                     {
@@ -201,7 +187,7 @@ namespace Plugin_AnalysisMaster.UI
                         X2 = pt2.X,
                         Y2 = pt2.Y,
                         Stroke = brush,
-                        StrokeThickness = w * 1.5, // 预览稍微加粗方便观察
+                        StrokeThickness = thickness * 1.5,
                         StrokeStartLineCap = PenLineCap.Round,
                         StrokeEndLineCap = PenLineCap.Round
                     };
@@ -210,31 +196,24 @@ namespace Plugin_AnalysisMaster.UI
             }
             else if (_currentStyle.PathType == PathCategory.Pattern)
             {
-                // 渲染阵列模式：根据选中的块名模拟不同形状
                 string name = (_currentStyle.SelectedBlockName ?? "").ToLower();
-                double step = Math.Max(0.05, 1.0 / (width / (_currentStyle.PatternSpacing + 1)));
-
-                for (double t = 0; t <= 1; t += step)
+                for (double t = 0; t <= 1; t += 0.1)
                 {
                     System.Windows.Point pt = GetBezierPoint(t, p1, p2, p3);
-                    double s = _currentStyle.PatternScale * 6; // 缩放适配预览
-
+                    double s = _currentStyle.PatternScale * 5;
                     FrameworkElement shape;
-                    // 简单的关键词匹配，让预览感知“图块切换”
+
                     if (name.Contains("箭") || name.Contains("arrow"))
                     {
-                        var poly = new System.Windows.Shapes.Polygon { Fill = brush };
+                        var poly = new System.Windows.Shapes.Polygon { Fill = brush }; // 明确指定 Shapes
                         poly.Points.Add(new System.Windows.Point(s, 0));
                         poly.Points.Add(new System.Windows.Point(-s, s / 2));
                         poly.Points.Add(new System.Windows.Point(-s, -s / 2));
                         shape = poly;
                     }
-                    else if (name.Contains("线") || name.Contains("dash"))
-                    {
-                        shape = new System.Windows.Shapes.Rectangle { Width = s * 2, Height = s / 2, Fill = brush };
-                    }
                     else
                     {
+                        // ✨ 修复：明确指定使用 System.Windows.Shapes.Ellipse
                         shape = new System.Windows.Shapes.Ellipse { Width = s, Height = s, Fill = brush };
                     }
 
@@ -243,45 +222,30 @@ namespace Plugin_AnalysisMaster.UI
                     PreviewCanvas.Children.Add(shape);
                 }
             }
-
-            // 5. 渲染端头箭头预览
-            if (_currentStyle.EndCapStyle != ArrowHeadType.None)
-            {
-                System.Windows.Point endPt = GetBezierPoint(1.0, p1, p2, p3);
-                System.Windows.Point preEndPt = GetBezierPoint(0.95, p1, p2, p3);
-
-                System.Windows.Vector dir = endPt - preEndPt;
-                if (dir.Length > 0) dir.Normalize();
-                System.Windows.Vector norm = new System.Windows.Vector(-dir.Y, dir.X);
-
-                double arrowSize = _currentStyle.ArrowSize * 1.2;
-                var arrow = new System.Windows.Shapes.Polygon { Fill = brush };
-                arrow.Points.Add(endPt);
-                arrow.Points.Add(endPt - dir * arrowSize + norm * arrowSize * 0.4);
-                arrow.Points.Add(endPt - dir * arrowSize - norm * arrowSize * 0.4);
-
-                PreviewCanvas.Children.Add(arrow);
-            }
         }
 
-        // ✨ 辅助方法：计算二次贝塞尔曲线上的点
+        // ✨ 辅助方法 (确保整个类中只保留一份)
         private System.Windows.Point GetBezierPoint(double t, System.Windows.Point p0, System.Windows.Point p1, System.Windows.Point p2)
         {
             double x = (1 - t) * (1 - t) * p0.X + 2 * t * (1 - t) * p1.X + t * t * p2.X;
             double y = (1 - t) * (1 - t) * p0.Y + 2 * t * (1 - t) * p1.Y + t * t * p2.Y;
             return new System.Windows.Point(x, y);
         }
+
         private double CalculateBezierWidth(double t, double s, double m, double e)
         {
             return (1 - t) * (1 - t) * s + 2 * t * (1 - t) * m + t * t * e;
         }
+
+
+
         // ✨ 修复：确保所有参数变动时先同步数据模型
 
         private void OnParamChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
         {
             if (this.IsLoaded)
             {
-                SyncStyleFromUI(); // 必须先同步数据
+                SyncStyleFromUI(); // ✨ 必须先同步 UI 数据到 _currentStyle
                 UpdatePreview();
             }
         }
@@ -290,7 +254,7 @@ namespace Plugin_AnalysisMaster.UI
         {
             if (this.IsLoaded)
             {
-                SyncStyleFromUI(); // 必须先同步数据
+                SyncStyleFromUI(); // ✨ 必须先同步 UI 数据到 _currentStyle
                 UpdatePreview();
             }
         }
