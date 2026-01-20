@@ -673,5 +673,27 @@ namespace Plugin_AnalysisMaster.UI
             }
         }
         private void Close_Click(object sender, RoutedEventArgs e) => this.Close();
+        /// <summary>
+        /// 实现无边框窗口的鼠标拖动功能
+        /// </summary>
+        private void TitleBar_MouseLeftButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            // 检查是否是鼠标左键按下
+            if (e.LeftButton == System.Windows.Input.MouseButtonState.Pressed)
+            {
+                // 调用 WPF 窗口自带的拖动方法
+                this.DragMove();
+            }
+        }
+        /// <summary>
+        /// 点击标题旁边的 ⓘ 按钮触发
+        /// </summary>
+        private void AboutBtn_Click(object sender, RoutedEventArgs e)
+        {
+            AboutWindow aboutWin = new AboutWindow();
+            // 指定父窗口，确保 AboutWindow 浮动在主程序之上
+            aboutWin.Owner = this;
+            aboutWin.ShowDialog();
+        }
     }
 }
