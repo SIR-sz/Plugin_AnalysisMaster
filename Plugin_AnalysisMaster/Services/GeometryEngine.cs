@@ -98,15 +98,16 @@ namespace Plugin_AnalysisMaster.Services
         }
 
         /// <summary>
-        /// 渲染动线主体：实现 Solid（实线）和 Pattern（两端留白居中阵列）逻辑。
-        /// 方案二逻辑：计算在总长下按间距排布的单元数，将多出的余量平摊在路径首尾，
-        /// 从而解决终点箭头与最后一个单元之间空位不一致的问题。
+        /// 渲染动线主体部分。
+        /// 包含：
+        /// 1. 实线 (Solid) 渲染：基于贝塞尔宽度算法生成带粗细变化的多段线。
+        /// 2. 阵列 (Pattern) 渲染：基于两端留白居中算法，支持“组合模式”下的两个图块交替排布。
         /// </summary>
         private static void RenderBody(BlockTableRecord btr, Transaction tr, Curve curve, AnalysisStyle style, ObjectIdCollection ids)
         {
             double len = curve.GetDistanceAtParameter(curve.EndParam);
 
-            // 分支 1：实线渲染 (保持原有贝塞尔宽度逻辑)
+            // 分支 1：实线渲染
             if (style.PathType == PathCategory.Solid)
             {
                 double step = Math.Max(style.ArrowSize * 0.15, 0.5);
@@ -132,39 +133,41 @@ namespace Plugin_AnalysisMaster.Services
                     ids.Add(AddToDb(btr, tr, pl, style));
                 }
             }
-            // 分支 2：阵列模式 (✨ 方案二：两端留白居中逻辑)
+            // 分支 2：阵列渲染 (包含组合交替逻辑)
             else if (style.PathType == PathCategory.Pattern)
             {
-                ObjectId blockId = GetOrImportBlock(style.SelectedBlockName, btr.Database, tr);
-                if (blockId.IsNull) return;
+                // 获取主图元 ID
+                ObjectId blockId1 = GetOrImportBlock(style.SelectedBlockName, btr.Database, tr);
+                // 获取组合图元 ID (未开启组合则使用主图元)
+                ObjectId blockId2 = style.IsComposite ? GetOrImportBlock(style.SelectedBlockName2, btr.Database, tr) : blockId1;
+
+                if (blockId1.IsNull) return;
 
                 double spacing = style.PatternSpacing;
                 if (spacing <= 0.001) spacing = 10.0;
 
-                // 1. 计算在该长度下能放置的最大单元数量
-                // 例如：长度 35, 间距 10 -> count = 4 (位置 0, 10, 20, 30)
+                // 1. 计算能容纳的单元总数
                 int count = (int)(len / spacing) + 1;
-
-                // 2. 计算这些单元按固定间距排列所需的总长度
+                // 2. 计算居中对齐的起始余量
                 double occupiedLen = (count - 1) * spacing;
-
-                // 3. 计算首尾需要平摊的留白余量 (Margin)
                 double margin = (len - occupiedLen) / 2.0;
 
                 for (int i = 0; i < count; i++)
                 {
-                    // 4. 计算当前单元的插入距离：首部余量 + 间距累加
                     double currentDist = margin + (i * spacing);
-
-                    // 安全过滤：确保距离在路径合法范围内
                     if (currentDist < 0) currentDist = 0;
                     if (currentDist > len) currentDist = len;
+
+                    // ✨ 核心逻辑：如果是组合模式，按索引奇偶性交替使用 blockId1 和 blockId2
+                    ObjectId currentBlockId = (i % 2 != 0 && style.IsComposite) ? blockId2 : blockId1;
+                    // 安全检查，防止副图元导入失败
+                    if (currentBlockId.IsNull) currentBlockId = blockId1;
 
                     Point3d pt = curve.GetPointAtDist(currentDist);
                     double param = curve.GetParameterAtDistance(currentDist);
                     Vector3d tan = curve.GetFirstDerivative(param).GetNormal();
 
-                    using (BlockReference br = new BlockReference(pt, blockId))
+                    using (BlockReference br = new BlockReference(pt, currentBlockId))
                     {
                         br.Rotation = Math.Atan2(tan.Y, tan.X);
                         br.ScaleFactors = new Scale3d(style.PatternScale);

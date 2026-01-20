@@ -186,24 +186,32 @@
 
                     <GroupBox x:Name="PatternPanel" Header="阵列参数" Visibility="Collapsed">
                         <StackPanel>
-                            <TextBlock Text="选择图元样式" FontSize="11" Margin="0,5,0,0"/>
-                            <Grid Margin="0,5">
+                            <TextBlock Text="图元样式 1" FontSize="11" Margin="0,5,0,0"/>
+                            <ComboBox x:Name="BlockLibraryCombo" SelectionChanged="OnParamChanged" Margin="0,5"/>
+
+                            <Grid Margin="0,2,0,5">
                                 <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*"/>
                                     <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
                                 </Grid.ColumnDefinitions>
-                                <ComboBox x:Name="BlockLibraryCombo" SelectionChanged="OnParamChanged"/>
-                                <Button Grid.Column="1" Content="拾取" Click="PickBlock_Click" Width="45" Margin="5,0,0,0" Background="#3D3D3D" Foreground="#EEE" BorderBrush="#555"/>
+                                <CheckBox x:Name="CompositeCheckBox" Content="组合模式" Foreground="#2196F3" VerticalAlignment="Center" Click="OnCompositeToggle_Click"/>
                             </Grid>
+
+                            <StackPanel x:Name="CompositeSettingsPanel" Visibility="Collapsed">
+                                <TextBlock Text="图元样式 2" FontSize="11" Margin="0,5,0,0"/>
+                                <ComboBox x:Name="BlockLibraryCombo2" SelectionChanged="OnParamChanged" Margin="0,5"/>
+                            </StackPanel>
+
                             <TextBlock Text="排列间距" FontSize="11" Margin="0,5,0,0"/>
                             <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/>
                                     <ColumnDefinition Width="60"/>
                                 </Grid.ColumnDefinitions>
-                                <Slider x:Name="SpacingSlider" Minimum="1" Maximum="10000" Value="2.0" ValueChanged="OnParamChanged"/>
-                                <TextBox Grid.Column="1" Text="{Binding ElementName=SpacingSlider, Path=Value, UpdateSourceTrigger=PropertyChanged, StringFormat={}{0:F0}}" Style="{StaticResource ValueInputStyle}"/>
+                                <Slider x:Name="SpacingSlider" Minimum="0.1" Maximum="10000" Value="2.0" ValueChanged="OnParamChanged"/>
+                                <TextBox Grid.Column="1" Text="{Binding ElementName=SpacingSlider, Path=Value, UpdateSourceTrigger=PropertyChanged, StringFormat={}{0:F1}}" Style="{StaticResource ValueInputStyle}"/>
                             </Grid>
+
                             <TextBlock Text="单元缩放" FontSize="11" Margin="0,5,0,0"/>
                             <Grid>
                                 <Grid.ColumnDefinitions>
