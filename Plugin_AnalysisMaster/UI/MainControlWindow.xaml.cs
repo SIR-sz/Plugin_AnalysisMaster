@@ -644,7 +644,34 @@ namespace Plugin_AnalysisMaster.UI
                 UpdatePreview();
             }
         }
+        private void GenerateLegend_Click(object sender, RoutedEventArgs e)
+        {
+            // 暂时隐藏窗口，方便 CAD 操作
+            this.Hide();
 
+            try
+            {
+                Document doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
+
+                // 确保同步了当前的图层设置
+                SyncStyleFromUI();
+
+                using (doc.LockDocument())
+                {
+                    // 调用引擎生成图例
+                    GeometryEngine.GenerateLegend(doc, _currentStyle.TargetLayer);
+                }
+            }
+            catch (System.Exception ex)
+            {
+                Autodesk.AutoCAD.ApplicationServices.Application.ShowAlertDialog("生成图例出错: " + ex.Message);
+            }
+            finally
+            {
+                // 操作完成后显示回窗口
+                this.Show();
+            }
+        }
         private void Close_Click(object sender, RoutedEventArgs e) => this.Close();
     }
 }

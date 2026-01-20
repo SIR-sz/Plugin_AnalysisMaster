@@ -39,5 +39,6 @@ namespace Plugin_AnalysisMaster.Models
 
         public double PatternSpacing { get; set; } = 2.0;
         public double PatternScale { get; set; } = 1.0;
+
     }
 }

@@ -262,7 +262,6 @@
                         <StackPanel>
                             <TextBlock Text="动线颜色" FontSize="11" Margin="0,5,0,0"/>
                             <Rectangle x:Name="ColorPreview" Fill="SteelBlue" Height="25" Cursor="Hand" MouseLeftButtonDown="SelectColor_Click" Margin="0,8" RadiusX="3" RadiusY="3" Stroke="#444"/>
-
                             <Button Content="管理资源库 (DWG)" Click="OpenLibraryFolder_Click" Height="30" Margin="0,5,0,5" Background="#3D3D3D" Foreground="#2196F3" BorderBrush="#444" FontSize="11">
                                 <Button.Template>
                                     <ControlTemplate TargetType="Button">
@@ -277,15 +276,39 @@
                 </StackPanel>
             </ScrollViewer>
 
-            <Button Grid.Row="3" Content="点击图面开始绘制" Height="42" Background="#2196F3" Foreground="White" FontWeight="Bold" Click="StartDraw_Click" Margin="0,15,0,0">
-                <Button.Template>
-                    <ControlTemplate TargetType="Button">
-                        <Border Background="{TemplateBinding Background}" CornerRadius="6">
-                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                        </Border>
-                    </ControlTemplate>
-                </Button.Template>
-            </Button>
+            <Grid Grid.Row="3" Margin="0,15,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <Button Content="开始绘制" 
+                        Click="StartDraw_Click" 
+                        Height="35" Margin="0,0,5,0"
+                        Background="#2196F3" Foreground="White" FontWeight="Bold">
+                    <Button.Template>
+                        <ControlTemplate TargetType="Button">
+                            <Border Background="{TemplateBinding Background}" CornerRadius="4">
+                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                        </ControlTemplate>
+                    </Button.Template>
+                </Button>
+
+                <Button Grid.Column="1" 
+                        Content="生成图例" 
+                        Click="GenerateLegend_Click" 
+                        Height="35" Margin="5,0,0,0"
+                        Background="#4CAF50" Foreground="White" FontWeight="Bold">
+                    <Button.Template>
+                        <ControlTemplate TargetType="Button">
+                            <Border Background="{TemplateBinding Background}" CornerRadius="4">
+                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                        </ControlTemplate>
+                    </Button.Template>
+                </Button>
+            </Grid>
         </Grid>
     </Border>
 </Window>

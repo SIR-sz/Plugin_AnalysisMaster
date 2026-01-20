@@ -5,7 +5,9 @@ using Autodesk.AutoCAD.EditorInput;
 using Autodesk.AutoCAD.Geometry;
 using Plugin_AnalysisMaster.Models;
 using System;
+using System.Collections.Generic; // ✨ 新增
 using System.IO;
+using System.Linq;                // ✨ 新增
 using System.Reflection;
 using Polyline = Autodesk.AutoCAD.DatabaseServices.Polyline;
 
@@ -13,6 +15,7 @@ namespace Plugin_AnalysisMaster.Services
 {
     public static class GeometryEngine
     {
+        private const string RegAppName = "ANALYSIS_MASTER_STYLE";
         /// <summary>
         /// 动线绘制主入口：支持多点连续拾取与自动打组
         /// </summary>
@@ -66,22 +69,8 @@ namespace Plugin_AnalysisMaster.Services
                     Curve path = CreatePathCurve(points, style.IsCurved);
                     using (path)
                     {
-                        // ✨ 核心修改：使用统一的缩进值
-                        double indent = style.CapIndent;
-                        Curve trimmedPath = TrimPath(path, indent, indent);
-
-                        if (trimmedPath != null)
-                        {
-                            RenderBody(btr, tr, trimmedPath, style, allIds);
-
-                            // 渲染起始端图块 (逻辑封装在内)
-                            RenderHead(btr, tr, path, style, allIds);
-
-                            // 渲染结束端图块 (逻辑封装在内)
-                            RenderTail(btr, tr, path, style, allIds);
-
-                            if (trimmedPath != path) trimmedPath.Dispose();
-                        }
+                        // ✨ 修改：直接调用 RenderPath 封装逻辑
+                        RenderPath(btr, tr, path, style, allIds);
                     }
 
                     if (allIds.Count > 1)
@@ -96,7 +85,31 @@ namespace Plugin_AnalysisMaster.Services
                 }
             }
         }
+        /// <summary>
+        /// ✨ 渲染路径封装：统一处理修剪、主体渲染和端头渲染
+        /// 解决 CS0103 报错，并供 DrawAnalysisLine 和 GenerateLegend 共同调用
+        /// </summary>
+        public static void RenderPath(BlockTableRecord btr, Transaction tr, Curve path, AnalysisStyle style, ObjectIdCollection allIds)
+        {
+            double indent = style.CapIndent;
+            // 修剪路径（处理缩进）
+            Curve trimmedPath = TrimPath(path, indent, indent);
 
+            if (trimmedPath != null)
+            {
+                // 1. 渲染主体（实线或阵列）
+                RenderBody(btr, tr, trimmedPath, style, allIds);
+
+                // 2. 渲染起始端
+                RenderHead(btr, tr, path, style, allIds);
+
+                // 3. 渲染结束端
+                RenderTail(btr, tr, path, style, allIds);
+
+                // 如果生成了新曲线则释放
+                if (trimmedPath != path) trimmedPath.Dispose();
+            }
+        }
         /// <summary>
         /// 渲染动线主体部分。
         /// 包含：
@@ -292,13 +305,135 @@ namespace Plugin_AnalysisMaster.Services
             return ObjectId.Null;
         }
 
+        /// <summary>
+        /// 修改后的 AddToDb：将路径单元、颜色、以及起终点箭头全部纳入指纹识别
+        /// </summary>
         private static ObjectId AddToDb(BlockTableRecord btr, Transaction tr, Entity ent, AnalysisStyle style)
         {
+            // 确保注册了 AppName
+            Database db = btr.Database;
+            RegAppTable rat = (RegAppTable)tr.GetObject(db.RegAppTableId, OpenMode.ForRead);
+            if (!rat.Has(RegAppName))
+            {
+                rat.UpgradeOpen();
+                RegAppTableRecord ratr = new RegAppTableRecord { Name = RegAppName };
+                rat.Add(ratr);
+                tr.AddNewlyCreatedDBObject(ratr, true);
+            }
+
             ent.Layer = style.TargetLayer;
+            // 确保设置了颜色
             ent.Color = Color.FromRgb(style.MainColor.R, style.MainColor.G, style.MainColor.B);
+
+            // ✨ 重新梳理样式指纹逻辑：增加起终点箭头判断
+            // 格式：路径模式|主块名|副块名|组合模式|颜色|起点箭头|终点箭头
+            string styleFingerprint = string.Format("{0}|{1}|{2}|{3}|{4}|{5}|{6}",
+                style.PathType,
+                style.SelectedBlockName,
+                style.SelectedBlockName2,
+                style.IsComposite,
+                style.MainColor.ToString(),
+                style.StartArrowType,
+                style.EndArrowType);
+
+            ResultBuffer rb = new ResultBuffer(
+                new TypedValue((int)DxfCode.ExtendedDataRegAppName, RegAppName),
+                new TypedValue((int)DxfCode.ExtendedDataAsciiString, styleFingerprint)
+            );
+            ent.XData = rb;
+
             ObjectId id = btr.AppendEntity(ent);
             tr.AddNewlyCreatedDBObject(ent, true);
             return id;
+        }
+        /// <summary>
+        /// 修改后的图例生成逻辑：考虑了箭头的种类和个数
+        /// </summary>
+        public static void GenerateLegend(Document doc, string targetLayer)
+        {
+            Editor ed = doc.Editor;
+            Database db = doc.Database;
+
+            // 1. 框选图元
+            SelectionFilter filter = new SelectionFilter(new TypedValue[] {
+        new TypedValue(0, "LWPOLYLINE,POLYLINE,SPLINE,INSERT"),
+        new TypedValue(8, targetLayer)
+    });
+
+            PromptSelectionResult selRes = ed.GetSelection(filter);
+            if (selRes.Status != PromptStatus.OK) return;
+
+            // 2. 识别并归类样式
+            var uniqueStyles = new Dictionary<string, AnalysisStyle>();
+
+            using (Transaction tr = db.TransactionManager.StartTransaction())
+            {
+                foreach (SelectedObject selObj in selRes.Value)
+                {
+                    Entity ent = tr.GetObject(selObj.ObjectId, OpenMode.ForRead) as Entity;
+                    if (ent == null || ent.XData == null) continue;
+
+                    TypedValue[] xdata = ent.XData.AsArray();
+                    var styleValue = xdata.FirstOrDefault(tv => tv.TypeCode == (int)DxfCode.ExtendedDataAsciiString);
+                    if (styleValue.Value == null) continue;
+
+                    string fingerprint = styleValue.Value.ToString();
+                    if (!uniqueStyles.ContainsKey(fingerprint))
+                    {
+                        // 解析新版指纹（包含 7 个部分）
+                        string[] parts = fingerprint.Split('|');
+                        if (parts.Length < 7) continue;
+
+                        var style = new AnalysisStyle();
+                        style.PathType = (PathCategory)System.Enum.Parse(typeof(PathCategory), parts[0]);
+                        style.SelectedBlockName = parts[1];
+                        style.SelectedBlockName2 = parts[2];
+                        style.IsComposite = bool.Parse(parts[3]);
+
+                        // 还原颜色
+                        var colorStr = parts[4];
+                        style.MainColor = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(colorStr);
+
+                        // ✨ 还原箭头设置
+                        style.StartArrowType = parts[5];
+                        style.EndArrowType = parts[6];
+
+                        // 默认一些图例显示的比例
+                        style.ArrowSize = 1.0;
+                        style.PatternScale = 1.0;
+
+                        uniqueStyles.Add(fingerprint, style);
+                    }
+                }
+
+                if (uniqueStyles.Count == 0) return;
+
+                // 3. 指定放置位置
+                PromptPointResult ppr = ed.GetPoint("\n请指定图例放置起点: ");
+                if (ppr.Status != PromptStatus.OK) return;
+
+                Point3d insertPt = ppr.Value;
+                BlockTableRecord btr = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
+
+                // 4. 绘制图例（一列排放）
+                double rowHeight = 30.0; // 调高了行高，防止大箭头重叠
+                double lineLength = 60.0;
+                int index = 0;
+
+                foreach (var style in uniqueStyles.Values)
+                {
+                    Point3d start = new Point3d(insertPt.X, insertPt.Y - (index * rowHeight), 0);
+                    Point3d end = new Point3d(insertPt.X + lineLength, start.Y, 0);
+
+                    using (Line samplePath = new Line(start, end))
+                    {
+                        // ✨ 自动根据还原的 style 绘制主体和对应的箭头
+                        RenderPath(btr, tr, samplePath, style, new ObjectIdCollection());
+                    }
+                    index++;
+                }
+                tr.Commit();
+            }
         }
 
         private static Polyline ConvertToPolyline(Curve curve)
