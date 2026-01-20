@@ -48,16 +48,19 @@
             <Setter Property="Foreground" Value="White"/>
             <Setter Property="BorderBrush" Value="#555"/>
             <Setter Property="Padding" Value="6,4"/>
+            <Setter Property="ScrollViewer.CanContentScroll" Value="True"/>
+            <Setter Property="VirtualizingStackPanel.IsVirtualizing" Value="True"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="ComboBox">
                         <Grid>
                             <ToggleButton Name="ToggleButton" 
-                                          BorderBrush="{TemplateBinding BorderBrush}" 
-                                          Background="{TemplateBinding Background}"
-                                          Foreground="{TemplateBinding Foreground}"
-                                          Grid.ColumnSpan="2" Focusable="false" IsChecked="{Binding Path=IsDropDownOpen,Mode=TwoWay,RelativeSource={RelativeSource TemplatedParent}}" 
-                                          ClickMode="Press">
+                                  BorderBrush="{TemplateBinding BorderBrush}" 
+                                  Background="{TemplateBinding Background}"
+                                  Foreground="{TemplateBinding Foreground}"
+                                  Grid.ColumnSpan="2" Focusable="false" 
+                                  IsChecked="{Binding Path=IsDropDownOpen,Mode=TwoWay,RelativeSource={RelativeSource TemplatedParent}}" 
+                                  ClickMode="Press">
                                 <ToggleButton.Template>
                                     <ControlTemplate TargetType="ToggleButton">
                                         <Border Name="Border" CornerRadius="4" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1">
@@ -66,15 +69,15 @@
                                     </ControlTemplate>
                                 </ToggleButton.Template>
                             </ToggleButton>
-                            <ContentPresenter Name="ContentSite" IsHitTestVisible="False"  Content="{TemplateBinding SelectionBoxItem}"
-                                              ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
-                                              ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}"
-                                              Margin="10,3,23,3" VerticalAlignment="Center" HorizontalAlignment="Left" />
+                            <ContentPresenter Name="ContentSite" IsHitTestVisible="False" Content="{TemplateBinding SelectionBoxItem}"
+                                      ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                      ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}"
+                                      Margin="10,3,23,3" VerticalAlignment="Center" HorizontalAlignment="Left" />
                             <Popup Name="Popup" Placement="Bottom" IsOpen="{TemplateBinding IsDropDownOpen}" AllowsTransparency="True" Focusable="False" PopupAnimation="Slide">
                                 <Grid Name="DropDown" SnapsToDevicePixels="True" MinWidth="{TemplateBinding ActualWidth}" MaxHeight="{TemplateBinding MaxDropDownHeight}">
                                     <Border Name="DropDownBorder" Background="#2D2D2D" BorderThickness="1" BorderBrush="#555" CornerRadius="2"/>
-                                    <ScrollViewer Margin="4,6,4,6" SnapsToDevicePixels="True">
-                                        <StackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Contained" />
+                                    <ScrollViewer Margin="4,6,4,6" SnapsToDevicePixels="True" VerticalScrollBarVisibility="Auto">
+                                        <VirtualizingStackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Contained" />
                                     </ScrollViewer>
                                 </Grid>
                             </Popup>
@@ -208,26 +211,32 @@
                         <StackPanel>
                             <TextBlock Text="起始端" FontSize="11" Margin="0,5,0,0"/>
                             <ComboBox x:Name="StartArrowCombo" SelectionChanged="OnParamChanged" Margin="0,2">
-                                <ComboBoxItem Content="无"/>
-                                <ComboBoxItem Content="基础箭头"/>
-                                <ComboBoxItem Content="圆点"/>
+                                <ComboBoxItem Content="无" Tag="None" IsSelected="True"/>
                             </ComboBox>
 
                             <TextBlock Text="结束端" FontSize="11" Margin="0,5,0,0"/>
                             <ComboBox x:Name="EndArrowCombo" SelectionChanged="OnParamChanged" Margin="0,2">
-                                <ComboBoxItem Content="无"/>
-                                <ComboBoxItem Content="基础箭头" IsSelected="True"/>
-                                <ComboBoxItem Content="圆点"/>
+                                <ComboBoxItem Content="无" Tag="None" IsSelected="True"/>
                             </ComboBox>
 
-                            <TextBlock Text="箭头尺寸" FontSize="11" Margin="0,5,0,0"/>
+                            <TextBlock Text="端头缩放" FontSize="11" Margin="0,5,0,0"/>
                             <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/>
                                     <ColumnDefinition Width="60"/>
                                 </Grid.ColumnDefinitions>
-                                <Slider x:Name="ArrowSizeSlider" Minimum="1" Maximum="5000" Value="8" ValueChanged="OnParamChanged"/>
-                                <TextBox Grid.Column="1" Text="{Binding ElementName=ArrowSizeSlider, Path=Value, UpdateSourceTrigger=PropertyChanged, StringFormat={}{0:F0}}" Style="{StaticResource ValueInputStyle}"/>
+                                <Slider x:Name="ArrowSizeSlider" Minimum="0.1" Maximum="1000" Value="8" ValueChanged="OnParamChanged"/>
+                                <TextBox Grid.Column="1" Text="{Binding ElementName=ArrowSizeSlider, Path=Value, UpdateSourceTrigger=PropertyChanged, StringFormat={}{0:F1}}" Style="{StaticResource ValueInputStyle}"/>
+                            </Grid>
+
+                            <TextBlock Text="端头缩进" FontSize="11" Margin="0,5,0,0"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="60"/>
+                                </Grid.ColumnDefinitions>
+                                <Slider x:Name="CapIndentSlider" Minimum="-100" Maximum="100" Value="0" ValueChanged="OnParamChanged"/>
+                                <TextBox Grid.Column="1" Text="{Binding ElementName=CapIndentSlider, Path=Value, UpdateSourceTrigger=PropertyChanged, StringFormat={}{0:F0}}" Style="{StaticResource ValueInputStyle}"/>
                             </Grid>
                         </StackPanel>
                     </GroupBox>

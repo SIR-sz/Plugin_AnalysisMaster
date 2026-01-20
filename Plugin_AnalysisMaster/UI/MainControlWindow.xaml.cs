@@ -48,14 +48,30 @@ namespace Plugin_AnalysisMaster.UI
             this.Loaded += (s, e) => { SyncStyleFromUI(); UpdatePreview(); };
         }
 
+        /// <summary>
+        /// 加载外部 DWG 资源库并根据命名约定填充下拉列表。
+        /// 逻辑：Cap_ 开头的进入端头列表，Pat_ 开头的进入阵列列表。
+        /// 优化：UI 只显示去掉前缀后的名称，真实名称隐藏在 Tag 中；默认添加“无”选项。
+        /// </summary>
         private void LoadPatternLibrary()
         {
-            if (BlockLibraryCombo == null) return;
-            BlockLibraryCombo.Items.Clear();
-            string dllPath = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
-            string libPath = Path.Combine(dllPath, "Assets", "PatternLibrary.dwg");
+            if (BlockLibraryCombo == null || StartArrowCombo == null || EndArrowCombo == null) return;
 
-            if (File.Exists(libPath))
+            // 1. 初始化下拉框
+            BlockLibraryCombo.Items.Clear();
+            StartArrowCombo.Items.Clear();
+            EndArrowCombo.Items.Clear();
+
+            // 2. 预设“无”选项
+            StartArrowCombo.Items.Add(new ComboBoxItem { Content = "无", Tag = "None" });
+            EndArrowCombo.Items.Add(new ComboBoxItem { Content = "无", Tag = "None" });
+            StartArrowCombo.SelectedIndex = 0; // 起始端默认选“无”
+            EndArrowCombo.SelectedIndex = 0;
+
+            string dllPath = System.IO.Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
+            string libPath = System.IO.Path.Combine(dllPath, "Assets", "PatternLibrary.dwg");
+
+            if (System.IO.File.Exists(libPath))
             {
                 using (Database db = new Database(false, true))
                 {
@@ -66,7 +82,21 @@ namespace Plugin_AnalysisMaster.UI
                         foreach (ObjectId id in bt)
                         {
                             BlockTableRecord btr = (BlockTableRecord)tr.GetObject(id, OpenMode.ForRead);
-                            if (!btr.IsLayout && !btr.IsAnonymous) BlockLibraryCombo.Items.Add(btr.Name);
+                            if (btr.IsLayout || btr.IsAnonymous) continue;
+
+                            string realName = btr.Name;
+                            // 3. 根据前缀分发到不同的下拉框
+                            if (realName.StartsWith("Cap_", StringComparison.OrdinalIgnoreCase))
+                            {
+                                string displayName = realName.Substring(4); // 去掉 Cap_
+                                StartArrowCombo.Items.Add(new ComboBoxItem { Content = displayName, Tag = realName });
+                                EndArrowCombo.Items.Add(new ComboBoxItem { Content = displayName, Tag = realName });
+                            }
+                            else if (realName.StartsWith("Pat_", StringComparison.OrdinalIgnoreCase))
+                            {
+                                string displayName = realName.Substring(4); // 去掉 Pat_
+                                BlockLibraryCombo.Items.Add(new ComboBoxItem { Content = displayName, Tag = realName });
+                            }
                         }
                     }
                 }
@@ -74,59 +104,52 @@ namespace Plugin_AnalysisMaster.UI
             if (BlockLibraryCombo.Items.Count > 0) BlockLibraryCombo.SelectedIndex = 0;
         }
 
+        /// <summary>
+        /// 将 UI 界面上的控件状态同步到 _currentStyle 内存模型中。
+        /// 修复逻辑：增加对 CapIndentSlider 的空值检查，防止 XAML 未配置时崩溃。
+        /// </summary>
         private void SyncStyleFromUI()
         {
             if (PathTypeCombo == null || _currentStyle == null) return;
 
-            // 1. 同步路径模式 (实线 vs 阵列)
-            var typeItem = (ComboBoxItem)PathTypeCombo.SelectedItem;
-            if (typeItem != null)
+            // 1. 同步路径模式
+            if (PathTypeCombo.SelectedItem is ComboBoxItem typeItem)
                 _currentStyle.PathType = (PathCategory)Enum.Parse(typeof(PathCategory), typeItem.Tag.ToString());
 
-            // 2. 同步选中的图块名称 (用于阵列模式)
-            if (BlockLibraryCombo != null && BlockLibraryCombo.SelectedItem != null)
-                _currentStyle.SelectedBlockName = BlockLibraryCombo.SelectedItem.ToString();
+            // 2. 同步阵列单元
+            if (BlockLibraryCombo != null && BlockLibraryCombo.SelectedItem is ComboBoxItem patItem)
+                _currentStyle.SelectedBlockName = patItem.Tag.ToString();
 
-            // 3. ✨ 新增：同步起点箭头类型
-            if (StartArrowCombo != null && StartArrowCombo.SelectedItem != null)
-            {
-                // 获取选中的文本（如果是 ComboBoxItem 则取 Content）
-                string val = (StartArrowCombo.SelectedItem is ComboBoxItem cbi)
-                             ? cbi.Content.ToString()
-                             : StartArrowCombo.SelectedItem.ToString();
+            // 3. 同步起始端与结束端块名
+            if (StartArrowCombo != null && StartArrowCombo.SelectedItem is ComboBoxItem startItem)
+                _currentStyle.StartArrowType = startItem.Tag.ToString();
 
-                // 如果选的是“无”，则存入 "None"，否则存入块名
-                _currentStyle.StartArrowType = (val == "无" || val == "None") ? "None" : val;
-            }
+            if (EndArrowCombo != null && EndArrowCombo.SelectedItem is ComboBoxItem endItem)
+                _currentStyle.EndArrowType = endItem.Tag.ToString();
 
-            // 4. ✨ 新增：同步结束端箭头类型
-            if (EndArrowCombo != null && EndArrowCombo.SelectedItem != null)
-            {
-                string val = (EndArrowCombo.SelectedItem is ComboBoxItem cbi)
-                             ? cbi.Content.ToString()
-                             : EndArrowCombo.SelectedItem.ToString();
-
-                _currentStyle.EndArrowType = (val == "无" || val == "None") ? "None" : val;
-            }
-
-            // 5. 同步颜色透明度
+            // 4. 同步滑块数值
             _currentStyle.Transparency = TransSlider?.Value ?? 0;
-
-            // 6. 同步实线宽度参数 (起点、中点、终点)
             _currentStyle.StartWidth = StartWidthSlider?.Value ?? 1.0;
             _currentStyle.MidWidth = MidWidthSlider?.Value ?? 0.8;
             _currentStyle.EndWidth = EndWidthSlider?.Value ?? 0.5;
-
-            // 7. 同步排列间距
-            if (SpacingSlider != null)
-            {
-                _currentStyle.PatternSpacing = SpacingSlider.Value;
-            }
-
-            // 8. 同步图块缩放比例
+            _currentStyle.PatternSpacing = SpacingSlider?.Value ?? 10.0;
             _currentStyle.PatternScale = PatternScaleSlider?.Value ?? 1.0;
+            _currentStyle.ArrowSize = ArrowSizeSlider?.Value ?? 8.0;
+
+            // ✨ 关键修复：确保名称与 XAML 中的 x:Name 一致
+            if (CapIndentSlider != null)
+            {
+                _currentStyle.CapIndent = CapIndentSlider.Value;
+            }
         }
 
+        /// <summary>
+        /// 刷新 UI 界面上的预览画布。
+        /// 修改逻辑：
+        /// 1. 压缩预览曲线控制点范围（从 0.1~0.9 压缩至 0.2~0.8），防止大尺寸端头超出 Canvas 边界。
+        /// 2. 增加起始端和结束端箭头的实时预览，支持变色和跟随切线旋转。
+        /// 3. 线体（或阵列序列）的生成范围现在会受 style.CapIndent 影响，模拟真实缩进效果。
+        /// </summary>
         private void UpdatePreview()
         {
             if (PreviewCanvas == null || !this.IsLoaded) return;
@@ -136,28 +159,34 @@ namespace Plugin_AnalysisMaster.UI
             double h = PreviewCanvas.ActualHeight;
             if (w <= 0 || h <= 0) return;
 
-            System.Windows.Point p1 = new System.Windows.Point(w * 0.1, h * 0.75);
-            System.Windows.Point p2 = new System.Windows.Point(w * 0.5, h * 0.1);
-            System.Windows.Point p3 = new System.Windows.Point(w * 0.9, h * 0.5);
+            // ✨ 优化：收缩控制点坐标，为端头留出更多显示空间（防止超出范围）
+            System.Windows.Point p1 = new System.Windows.Point(w * 0.2, h * 0.7);
+            System.Windows.Point p2 = new System.Windows.Point(w * 0.5, h * 0.2);
+            System.Windows.Point p3 = new System.Windows.Point(w * 0.8, h * 0.5);
 
             var brush = new SolidColorBrush(_currentStyle.MainColor);
             brush.Opacity = (100 - _currentStyle.Transparency) / 100.0;
 
+            // 计算缩进比例（预览图总长约 200-300px，缩进按比例换算）
+            double totalLenGuess = 300.0;
+            double indentOffset = (_currentStyle.CapIndent / totalLenGuess) * 0.5;
+
+            // --- 绘制路径主体 ---
             if (_currentStyle.PathType == PathCategory.Solid)
             {
                 int segments = 40;
+                // 起始 t 值受缩进影响
+                double tStart = Math.Max(0, indentOffset);
+                double tEnd = Math.Min(1, 1 - indentOffset);
+
                 for (int i = 0; i < segments; i++)
                 {
-                    double t = i / 40.0;
-                    System.Windows.Point pt1 = GetBezierPoint(t, p1, p2, p3);
-                    System.Windows.Point pt2 = GetBezierPoint((i + 1.0) / 40.0, p1, p2, p3);
+                    double t1 = tStart + (tEnd - tStart) * (i / (double)segments);
+                    double t2 = tStart + (tEnd - tStart) * ((i + 1.0) / segments);
 
-                    // 计算真实宽度
-                    double thickness = CalculateBezierWidth(t, _currentStyle.StartWidth, _currentStyle.MidWidth, _currentStyle.EndWidth);
-
-                    // ✨ 修复：视觉压缩逻辑。即使 CAD 里的宽度是 10000，预览里的最大厚度也限制在 40 像素，防止溢出
-                    double previewThickness = Math.Min(thickness * 0.05, 40);
-                    if (previewThickness < 1) previewThickness = 1;
+                    System.Windows.Point pt1 = GetBezierPoint(t1, p1, p2, p3);
+                    System.Windows.Point pt2 = GetBezierPoint(t2, p1, p2, p3);
+                    double thickness = CalculateBezierWidth(t1, _currentStyle.StartWidth, _currentStyle.MidWidth, _currentStyle.EndWidth);
 
                     Line line = new Line
                     {
@@ -166,49 +195,85 @@ namespace Plugin_AnalysisMaster.UI
                         X2 = pt2.X,
                         Y2 = pt2.Y,
                         Stroke = brush,
-                        StrokeThickness = previewThickness,
+                        StrokeThickness = thickness * 1.2,
                         StrokeStartLineCap = PenLineCap.Round,
                         StrokeEndLineCap = PenLineCap.Round
                     };
                     PreviewCanvas.Children.Add(line);
                 }
             }
-            else if (_currentStyle.PathType == PathCategory.Pattern)
+            else if (_currentStyle.PathType == PathCategory.Pattern && !string.IsNullOrEmpty(_currentStyle.SelectedBlockName))
             {
-                string blockName = _currentStyle.SelectedBlockName;
-                if (string.IsNullOrEmpty(blockName)) return;
+                SyncBlockToCurrentDoc(_currentStyle.SelectedBlockName);
+                ImageSource mask = GetBlockMaskSource(_currentStyle.SelectedBlockName);
 
-                SyncBlockToCurrentDoc(blockName);
-                ImageSource maskSource = GetBlockMaskSource(blockName);
+                // 阵列预览也受缩进影响
+                double tStart = Math.Max(0, indentOffset);
+                double tEnd = Math.Min(1, 1 - indentOffset);
+                double step = 0.12;
 
-                double step = 0.15;
-                for (double t = 0; t <= 1; t += step)
+                for (double t = tStart; t <= tEnd; t += step)
                 {
                     System.Windows.Point pt = GetBezierPoint(t, p1, p2, p3);
-                    double imgSize = 22;
-
-                    var colorRect = new System.Windows.Shapes.Rectangle
-                    {
-                        Width = imgSize,
-                        Height = imgSize,
-                        Fill = brush
-                    };
-
-                    if (maskSource != null)
-                        colorRect.OpacityMask = new ImageBrush(maskSource);
-
-                    System.Windows.Point nPt = GetBezierPoint(Math.Min(t + 0.01, 1), p1, p2, p3);
-                    Vector v = nPt - pt;
-                    double angle = Math.Atan2(v.Y, v.X) * 180 / Math.PI;
-
-                    colorRect.RenderTransform = new RotateTransform(angle, imgSize / 2, imgSize / 2);
-                    Canvas.SetLeft(colorRect, pt.X - imgSize / 2);
-                    Canvas.SetTop(colorRect, pt.Y - imgSize / 2);
-                    PreviewCanvas.Children.Add(colorRect);
+                    RenderPreviewItem(pt, t, p1, p2, p3, mask, brush, 22 * _currentStyle.PatternScale);
                 }
             }
+
+            // --- 绘制起终端预览 ---
+            RenderArrowPreview(p1, 0.0, p1, p2, p3, _currentStyle.StartArrowType, brush, true);
+            RenderArrowPreview(p3, 1.0, p1, p2, p3, _currentStyle.EndArrowType, brush, false);
+        }
+        /// <summary>
+        /// 渲染预览图中的单个图块项（用于阵列单元或端头箭头）。
+        /// 包含变色处理和旋转逻辑。
+        /// </summary>
+        private void RenderPreviewItem(System.Windows.Point pt, double t, System.Windows.Point p0, System.Windows.Point p1, System.Windows.Point p2, ImageSource mask, Brush brush, double size)
+        {
+            if (mask == null) return;
+            var rect = new System.Windows.Shapes.Rectangle { Width = size, Height = size, Fill = brush, OpacityMask = new ImageBrush(mask) };
+
+            System.Windows.Point nPt = GetBezierPoint(Math.Min(t + 0.01, 1), p0, p1, p2);
+            Vector v = nPt - pt;
+            double angle = Math.Atan2(v.Y, v.X) * 180 / Math.PI;
+
+            rect.RenderTransform = new RotateTransform(angle, size / 2, size / 2);
+            Canvas.SetLeft(rect, pt.X - size / 2);
+            Canvas.SetTop(rect, pt.Y - size / 2);
+            PreviewCanvas.Children.Add(rect);
         }
 
+        /// <summary>
+        /// 专门用于渲染起终点箭头的预览。
+        /// 包含图块同步、反向旋转（针对起点）以及基于 ArrowSize 的缩放。
+        /// </summary>
+        private void RenderArrowPreview(System.Windows.Point pt, double t, System.Windows.Point p0, System.Windows.Point p1, System.Windows.Point p2, string blockName, Brush brush, bool isStart)
+        {
+            if (string.IsNullOrEmpty(blockName) || blockName == "None") return;
+
+            SyncBlockToCurrentDoc(blockName);
+            ImageSource mask = GetBlockMaskSource(blockName);
+            if (mask == null) return;
+
+            // 预览尺寸基于 ArrowSize 缩放（基准 8.0 对应 24px）
+            double size = 24 * (_currentStyle.ArrowSize / 8.0);
+            if (size > 60) size = 60; // 限制预览最大尺寸
+
+            var rect = new System.Windows.Shapes.Rectangle { Width = size, Height = size, Fill = brush, OpacityMask = new ImageBrush(mask) };
+
+            // 计算切线角度
+            System.Windows.Point nextPt = GetBezierPoint(isStart ? 0.01 : 1.0, p0, p1, p2);
+            System.Windows.Point prevPt = GetBezierPoint(isStart ? 0.0 : 0.99, p0, p1, p2);
+            Vector v = nextPt - prevPt;
+            double angle = Math.Atan2(v.Y, v.X) * 180 / Math.PI;
+
+            // 起点箭头增加 180 度反转
+            if (isStart) angle += 180;
+
+            rect.RenderTransform = new RotateTransform(angle, size / 2, size / 2);
+            Canvas.SetLeft(rect, pt.X - size / 2);
+            Canvas.SetTop(rect, pt.Y - size / 2);
+            PreviewCanvas.Children.Add(rect);
+        }
         private void SyncBlockToCurrentDoc(string blockName)
         {
             var doc = AcApp.DocumentManager.MdiActiveDocument;
@@ -337,11 +402,22 @@ namespace Plugin_AnalysisMaster.UI
             if (this.IsLoaded) { SyncStyleFromUI(); UpdatePreview(); }
         }
 
+        /// <summary>
+        /// 当滑块类控件（Slider）的数值发生变化时触发的事件回调。
+        /// 该方法负责在用户拖动滑块（如调整宽度、透明度、间距等）时，
+        /// 实时将 UI 的最新数值同步到内存模型，并立即触发预览图的重绘，确保交互反馈的实时性。
+        /// </summary>
         private void OnParamChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
         {
-            if (this.IsLoaded) SyncStyleFromUI();
-        }
+            if (this.IsLoaded)
+            {
+                // 1. 同步最新的滑块数值到 _currentStyle 模型
+                SyncStyleFromUI();
 
+                // 2. 核心修复：立即触发预览 Canvas 的重绘逻辑
+                UpdatePreview();
+            }
+        }
         private void SelectColor_Click(object sender, System.Windows.Input.MouseButtonEventArgs e)
         {
             var colorDlg = new Autodesk.AutoCAD.Windows.ColorDialog();

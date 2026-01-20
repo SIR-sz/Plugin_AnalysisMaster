@@ -54,11 +54,12 @@ namespace Plugin_AnalysisMaster.Services
         }
 
         /// <summary>
-        /// 绘图逻辑：在屏幕上实时绘制“假”的图元进行预览
+        /// 绘图逻辑：在屏幕上实时绘制“假”的图元进行预览。
+        /// 修改逻辑：移除对已删除属性 HeadType 的引用。
+        /// 如果用户选择了端头图块（EndArrowType != "None"），则在预览中显示一个简易箭头占位。
         /// </summary>
         protected override bool WorldDraw(WorldDraw draw)
         {
-            // 构造包含当前鼠标位置的临时预览点集
             Point3dCollection previewPoints = new Point3dCollection();
             foreach (Point3d p in _pts) previewPoints.Add(p);
             previewPoints.Add(_tempPt);
@@ -67,7 +68,6 @@ namespace Plugin_AnalysisMaster.Services
 
             try
             {
-                // 1. 生成临时路径 (Spline 或 Polyline)
                 Curve path;
                 if (_style.IsCurved && previewPoints.Count > 2)
                     path = new Spline(previewPoints, 3, 0);
@@ -82,17 +82,15 @@ namespace Plugin_AnalysisMaster.Services
                 using (path)
                 {
                     double totalLen = path.GetDistanceAtParameter(path.EndParam);
-                    // 获取终点切线方向，确保预览时箭头也是对齐的
                     Vector3d tangent = path.GetFirstDerivative(path.EndParam).GetNormal();
                     Vector3d normal = tangent.GetPerpendicularVector();
                     Point3d endPt = path.EndPoint;
 
-                    // 设置预览颜色
                     draw.SubEntityTraits.Color = Autodesk.AutoCAD.Colors.Color.FromRgb(
                         _style.MainColor.R, _style.MainColor.G, _style.MainColor.B).ColorIndex;
 
-                    // 2. 绘制缩短后的本体预览（为箭头留出空间）
-                    double headIndent = (_style.HeadType == ArrowHeadType.None) ? 0 : _style.ArrowSize;
+                    // ✨ 核心修改：使用新的属性 CapIndent 进行线体缩进预览
+                    double headIndent = (_style.EndArrowType == "None") ? 0 : _style.CapIndent;
                     if (totalLen > headIndent)
                     {
                         double splitParam = path.GetParameterAtDistance(totalLen - headIndent);
@@ -107,17 +105,15 @@ namespace Plugin_AnalysisMaster.Services
                         }
                     }
 
-                    // 3. 绘制端头预览
-                    if (_style.HeadType != ArrowHeadType.None)
+                    // ✨ 核心修改：如果设置了端头，则显示简易三角形预览
+                    if (_style.EndArrowType != "None")
                     {
                         using (Polyline headPl = new Polyline())
                         {
                             Point3dCollection headPts = CalculatePreviewHead(endPt, tangent, normal, _style);
                             for (int i = 0; i < headPts.Count; i++)
                             {
-                                // 圆形端头预览使用凸度处理
-                                double bulge = (_style.HeadType == ArrowHeadType.Circle) ? 1.0 : 0.0;
-                                headPl.AddVertexAt(i, new Point2d(headPts[i].X, headPts[i].Y), bulge, 0, 0);
+                                headPl.AddVertexAt(i, new Point2d(headPts[i].X, headPts[i].Y), 0, 0, 0);
                             }
                             headPl.Closed = true;
                             draw.Geometry.Draw(headPl);
@@ -131,33 +127,20 @@ namespace Plugin_AnalysisMaster.Services
         }
 
         /// <summary>
-        /// 内部简易几何计算：用于预览
+        /// 内部简易几何计算：用于在 Jig 过程中渲染一个简易的三角形箭头预览。
+        /// 修改逻辑：删除对旧属性 SwallowDepth 和 HeadType 的引用，统一使用简易三角形。
         /// </summary>
         private Point3dCollection CalculatePreviewHead(Point3d end, Vector3d dir, Vector3d norm, AnalysisStyle style)
         {
             Point3dCollection pts = new Point3dCollection();
+            // 使用 ArrowSize 作为预览大小参考
             double s = style.ArrowSize;
 
-            switch (style.HeadType)
-            {
-                case ArrowHeadType.SwallowTail:
-                    double d = s * style.SwallowDepth;
-                    pts.Add(end);
-                    pts.Add(end - dir * s + norm * s * 0.5);
-                    pts.Add(end - dir * d);
-                    pts.Add(end - dir * s - norm * s * 0.5);
-                    break;
-                case ArrowHeadType.Circle:
-                    Point3d center = end - dir * s * 0.5;
-                    pts.Add(center + norm * s * 0.5);
-                    pts.Add(center - norm * s * 0.5);
-                    break;
-                default: // Basic
-                    pts.Add(end);
-                    pts.Add(end - dir * s + norm * s * 0.4);
-                    pts.Add(end - dir * s - norm * s * 0.4);
-                    break;
-            }
+            // 默认绘制一个基础的三角形箭头作为占位预览
+            pts.Add(end);
+            pts.Add(end - dir * s + norm * s * 0.4);
+            pts.Add(end - dir * s - norm * s * 0.4);
+
             return pts;
         }
     }

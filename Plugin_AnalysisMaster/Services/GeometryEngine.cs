@@ -66,26 +66,24 @@ namespace Plugin_AnalysisMaster.Services
                     Curve path = CreatePathCurve(points, style.IsCurved);
                     using (path)
                     {
-                        // ✨ 修复 1：使用 StartArrowType 和 EndArrowType 字符串判断是否需要缩进，彻底解决“选无仍有”
-                        bool hasHead = !style.EndArrowType.Equals("None", StringComparison.OrdinalIgnoreCase);
-                        bool hasTail = !style.StartArrowType.Equals("None", StringComparison.OrdinalIgnoreCase);
+                        // ✨ 核心修改：使用统一的缩进值
+                        double indent = style.CapIndent;
+                        Curve trimmedPath = TrimPath(path, indent, indent);
 
-                        double headIndent = hasHead ? style.ArrowSize * 0.8 : 0;
-                        double tailIndent = hasTail ? style.ArrowSize * 0.4 : 0;
-
-                        Curve trimmedPath = TrimPath(path, headIndent, tailIndent);
                         if (trimmedPath != null)
                         {
                             RenderBody(btr, tr, trimmedPath, style, allIds);
+
+                            // 渲染起始端图块 (逻辑封装在内)
+                            RenderHead(btr, tr, path, style, allIds);
+
+                            // 渲染结束端图块 (逻辑封装在内)
+                            RenderTail(btr, tr, path, style, allIds);
+
                             if (trimmedPath != path) trimmedPath.Dispose();
                         }
-
-                        // ✨ 修复 2：调用修改后的渲染方法，并传入 allIds 以便正确打组
-                        RenderHead(btr, tr, path, style, allIds);
-                        RenderTail(btr, tr, path, style, allIds);
                     }
 
-                    // 自动打组
                     if (allIds.Count > 1)
                     {
                         DBDictionary gd = (DBDictionary)tr.GetObject(db.GroupDictionaryId, OpenMode.ForWrite);
@@ -100,21 +98,19 @@ namespace Plugin_AnalysisMaster.Services
         }
 
         /// <summary>
-        /// 渲染动线主体：实现 Solid、Dashed 和 Pattern 三类逻辑
+        /// 渲染动线主体：实现 Solid（实线）和 Pattern（两端留白居中阵列）逻辑。
+        /// 方案二逻辑：计算在总长下按间距排布的单元数，将多出的余量平摊在路径首尾，
+        /// 从而解决终点箭头与最后一个单元之间空位不一致的问题。
         /// </summary>
         private static void RenderBody(BlockTableRecord btr, Transaction tr, Curve curve, AnalysisStyle style, ObjectIdCollection ids)
         {
             double len = curve.GetDistanceAtParameter(curve.EndParam);
 
-            // 分支 1：实线渲染 (Solid)
+            // 分支 1：实线渲染 (保持原有贝塞尔宽度逻辑)
             if (style.PathType == PathCategory.Solid)
             {
-                // ✨ 动态采样逻辑：基于长度和尺度计算采样点数，确保转弯圆滑
-                // 采样步长参考箭头大小的 15%，最小不小于 0.5 单位
                 double step = Math.Max(style.ArrowSize * 0.15, 0.5);
-                int samples = (int)Math.Max(len / step, 100); // 确保最少 100 个采样点
-
-                // 性能保护：防止极长线导致采样点过多（上限 3000）
+                int samples = (int)Math.Max(len / step, 100);
                 if (samples > 3000) samples = 3000;
 
                 using (Polyline pl = new Polyline { Plinegen = true })
@@ -127,7 +123,6 @@ namespace Plugin_AnalysisMaster.Services
 
                         if (i < samples)
                         {
-                            // 设置贝塞尔渐变宽度
                             double startW = CalculateBezierWidth(t, style.StartWidth, style.MidWidth, style.EndWidth);
                             double endW = CalculateBezierWidth((i + 1.0) / samples, style.StartWidth, style.MidWidth, style.EndWidth);
                             pl.SetStartWidthAt(i, startW);
@@ -137,60 +132,58 @@ namespace Plugin_AnalysisMaster.Services
                     ids.Add(AddToDb(btr, tr, pl, style));
                 }
             }
-            // 分支 2：阵列模式 (Pattern)
-            // 分支 2：阵列模式 (Pattern)
+            // 分支 2：阵列模式 (✨ 方案二：两端留白居中逻辑)
             else if (style.PathType == PathCategory.Pattern)
             {
                 ObjectId blockId = GetOrImportBlock(style.SelectedBlockName, btr.Database, tr);
                 if (blockId.IsNull) return;
 
-                // ✨ 修复 1：使用 AutoCAD 标准 API 获取长度
-                // 注意：这里去掉了 double，直接给已有的 len 变量赋值（修复 CS0136）
-                // 如果上方没有定义过 len，则保留 double
-                len = curve.GetDistanceAtParameter(curve.EndParam);
-
-                double dist = 0;
-
-                // 安全检查：防止间距过小导致死循环
                 double spacing = style.PatternSpacing;
                 if (spacing <= 0.001) spacing = 10.0;
 
-                while (dist <= len)
-                {
-                    Point3d pt = curve.GetPointAtDist(dist);
+                // 1. 计算在该长度下能放置的最大单元数量
+                // 例如：长度 35, 间距 10 -> count = 4 (位置 0, 10, 20, 30)
+                int count = (int)(len / spacing) + 1;
 
-                    // 获取当前位置的参数和切线
-                    double param = curve.GetParameterAtDistance(dist);
+                // 2. 计算这些单元按固定间距排列所需的总长度
+                double occupiedLen = (count - 1) * spacing;
+
+                // 3. 计算首尾需要平摊的留白余量 (Margin)
+                double margin = (len - occupiedLen) / 2.0;
+
+                for (int i = 0; i < count; i++)
+                {
+                    // 4. 计算当前单元的插入距离：首部余量 + 间距累加
+                    double currentDist = margin + (i * spacing);
+
+                    // 安全过滤：确保距离在路径合法范围内
+                    if (currentDist < 0) currentDist = 0;
+                    if (currentDist > len) currentDist = len;
+
+                    Point3d pt = curve.GetPointAtDist(currentDist);
+                    double param = curve.GetParameterAtDistance(currentDist);
                     Vector3d tan = curve.GetFirstDerivative(param).GetNormal();
 
                     using (BlockReference br = new BlockReference(pt, blockId))
                     {
                         br.Rotation = Math.Atan2(tan.Y, tan.X);
                         br.ScaleFactors = new Scale3d(style.PatternScale);
-
-                        // 设置颜色
                         br.Color = Autodesk.AutoCAD.Colors.Color.FromRgb(
-                            style.MainColor.R,
-                            style.MainColor.G,
-                            style.MainColor.B);
+                            style.MainColor.R, style.MainColor.G, style.MainColor.B);
 
                         ids.Add(AddToDb(btr, tr, br, style));
                     }
-
-                    // 按 UI 设定的间距递增
-                    dist += spacing;
                 }
             }
         }
-        private static void RenderHead(BlockTableRecord btr, Transaction tr, Curve curve, AnalysisStyle style, ObjectIdCollection ids)
+        /// <summary>
+        /// 在路径起点渲染选中的端头图块。
+        /// 修改逻辑：将缩放比例从 PatternScale 更改为 ArrowSize，实现缩放控制的解耦。
+        /// 同时保持起始端 180 度反向逻辑，确保箭头背向路径。
+        /// </summary>
+        private static void RenderHead(BlockTableRecord btr, Transaction tr, Curve curve, AnalysisStyle style, ObjectIdCollection idCol)
         {
-            // 拦截“无”选项
-            if (string.IsNullOrEmpty(style.StartArrowType) ||
-                style.StartArrowType.Equals("None", StringComparison.OrdinalIgnoreCase) ||
-                style.StartArrowType.Equals("无"))
-            {
-                return;
-            }
+            if (string.IsNullOrEmpty(style.StartArrowType) || style.StartArrowType == "None") return;
 
             ObjectId blockId = GetOrImportBlock(style.StartArrowType, btr.Database, tr);
             if (blockId.IsNull) return;
@@ -201,27 +194,25 @@ namespace Plugin_AnalysisMaster.Services
             using (BlockReference br = new BlockReference(startPt, blockId))
             {
                 br.Rotation = Math.Atan2(dir.Y, dir.X) + Math.PI;
-                // 使用 ArrowSize 控制端头大小
+
+                // ✨ 修改：端头缩放现在独立使用 style.ArrowSize
                 br.ScaleFactors = new Scale3d(style.ArrowSize);
 
                 br.Color = Autodesk.AutoCAD.Colors.Color.FromRgb(
-                    style.MainColor.R,
-                    style.MainColor.G,
-                    style.MainColor.B);
+                    style.MainColor.R, style.MainColor.G, style.MainColor.B);
 
-                // 添加到数据库并记录 ID
-                ids.Add(AddToDb(btr, tr, br, style));
+                ObjectId id = btr.AppendEntity(br);
+                tr.AddNewlyCreatedDBObject(br, true);
+                idCol.Add(id);
             }
         }
-        private static void RenderTail(BlockTableRecord btr, Transaction tr, Curve curve, AnalysisStyle style, ObjectIdCollection ids)
+        /// <summary>
+        /// 在路径终点渲染选中的端头图块。
+        /// 修改逻辑：将缩放比例从 PatternScale 更改为 ArrowSize，确保端头缩放不受阵列单元缩放影响。
+        /// </summary>
+        private static void RenderTail(BlockTableRecord btr, Transaction tr, Curve curve, AnalysisStyle style, ObjectIdCollection idCol)
         {
-            // 拦截“无”选项
-            if (string.IsNullOrEmpty(style.EndArrowType) ||
-                style.EndArrowType.Equals("None", StringComparison.OrdinalIgnoreCase) ||
-                style.EndArrowType.Equals("无"))
-            {
-                return;
-            }
+            if (string.IsNullOrEmpty(style.EndArrowType) || style.EndArrowType == "None") return;
 
             ObjectId blockId = GetOrImportBlock(style.EndArrowType, btr.Database, tr);
             if (blockId.IsNull) return;
@@ -232,14 +223,16 @@ namespace Plugin_AnalysisMaster.Services
             using (BlockReference br = new BlockReference(endPt, blockId))
             {
                 br.Rotation = Math.Atan2(dir.Y, dir.X);
+
+                // ✨ 修改：端头缩放现在独立使用 style.ArrowSize
                 br.ScaleFactors = new Scale3d(style.ArrowSize);
 
                 br.Color = Autodesk.AutoCAD.Colors.Color.FromRgb(
-                    style.MainColor.R,
-                    style.MainColor.G,
-                    style.MainColor.B);
+                    style.MainColor.R, style.MainColor.G, style.MainColor.B);
 
-                ids.Add(AddToDb(btr, tr, br, style));
+                ObjectId id = btr.AppendEntity(br);
+                tr.AddNewlyCreatedDBObject(br, true);
+                idCol.Add(id);
             }
         }
         private static void RenderFeature(BlockTableRecord btr, Transaction tr, Point3dCollection pts, AnalysisStyle style, ObjectIdCollection idCol)
@@ -255,34 +248,16 @@ namespace Plugin_AnalysisMaster.Services
             }
         }
 
+        /// <summary>
+        /// 计算特征点位：原本用于内置箭头的几何计算。
+        /// 由于现在改用图块渲染，此方法在当前版本中仅作为内部辅助（或可直接删除相关调用）。
+        /// 修改逻辑：移除对已不存在的样式属性的引用，防止编译错误。
+        /// </summary>
         private static Point3dCollection CalculateFeaturePoints(Point3d basePt, Vector3d dir, AnalysisStyle style, bool isHead)
         {
-            Point3dCollection pts = new Point3dCollection();
-            double s = style.ArrowSize;
-            Vector3d norm = dir.GetPerpendicularVector();
-            ArrowHeadType type = isHead ? style.EndCapStyle : style.StartCapStyle;
-
-            switch (type)
-            {
-                case ArrowHeadType.SwallowTail:
-                    double d = s * style.SwallowDepth;
-                    pts.Add(basePt);
-                    pts.Add(basePt - dir * s + norm * s * 0.5);
-                    pts.Add(basePt - dir * d);
-                    pts.Add(basePt - dir * s - norm * s * 0.5);
-                    break;
-                case ArrowHeadType.Circle:
-                    pts.Add(basePt + norm * s * 0.5);
-                    pts.Add(basePt - norm * s * 0.5);
-                    break;
-                case ArrowHeadType.Basic:
-                default:
-                    pts.Add(basePt);
-                    pts.Add(basePt - dir * s + norm * s * 0.4);
-                    pts.Add(basePt - dir * s - norm * s * 0.4);
-                    break;
-            }
-            return pts;
+            // ✨ 简化逻辑：因为现在使用 RenderHead/RenderTail (图块模式)，不再需要这个复杂的 Switch 计算。
+            // 这里返回空集合，旧的 RenderFeature 调用将不会产生任何对象。
+            return new Point3dCollection();
         }
 
         private static ObjectId GetOrImportBlock(string name, Database destDb, Transaction tr)
@@ -344,16 +319,30 @@ namespace Plugin_AnalysisMaster.Services
             tr.AddNewlyCreatedDBObject(skeleton, true);
         }
 
+        /// <summary>
+        /// 根据缩进参数修剪路径曲线。
+        /// 修改逻辑：增加了对 headLen 和 tailLen 的范围限制（Clamping），
+        /// 确保当缩进为负数时，距离不会小于 0 或大于总长，从而支持线体与箭头的重叠而不引发异常。
+        /// </summary>
         private static Curve TrimPath(Curve rawPath, double headLen, double tailLen)
         {
             try
             {
                 double totalLen = rawPath.GetDistanceAtParameter(rawPath.EndParam);
-                if (totalLen <= (headLen + tailLen + 1e-4)) return null;
-                double p1 = rawPath.GetParameterAtDistance(tailLen);
-                double p2 = rawPath.GetParameterAtDistance(totalLen - headLen);
+
+                // 计算实际的采样距离，确保在 [0, totalLen] 范围内
+                // 正数缩进 = 向内缩短；负数或零 = 不缩短（由于 CAD 曲线扩展较复杂，负数暂按不缩短处理以保证重叠）
+                double d1 = Math.Max(0, Math.Min(totalLen - 1e-4, tailLen));
+                double d2 = Math.Max(d1 + 1e-4, Math.Min(totalLen, totalLen - headLen));
+
+                if (totalLen <= (d1 + (totalLen - d2) + 1e-4)) return null;
+
+                double p1 = rawPath.GetParameterAtDistance(d1);
+                double p2 = rawPath.GetParameterAtDistance(d2);
+
                 using (DBObjectCollection subCurves = rawPath.GetSplitCurves(new DoubleCollection { p1, p2 }))
                 {
+                    // 获取中间段曲线
                     int targetIndex = (subCurves.Count >= 3) ? 1 : 0;
                     return subCurves[targetIndex] as Curve;
                 }
