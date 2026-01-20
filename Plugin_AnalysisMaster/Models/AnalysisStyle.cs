@@ -20,7 +20,7 @@ namespace Plugin_AnalysisMaster.Models
 
         // 几何宽度
         public double StartWidth { get; set; } = 1.0;
-        public double MidWidth { get; set; } = 0.8;
+        public double MidWidth { get; set; } = 1.0;
         public double EndWidth { get; set; } = 1.0;
 
         // 端头设置

@@ -63,7 +63,7 @@ namespace Plugin_AnalysisMaster
             else
             {
                 var doc = Application.DocumentManager.MdiActiveDocument;
-                doc?.Editor.WriteMessage("\n[错误] 该插件为 CadAtlasManager 授权专版，请从主程序面板启动。");
+                doc?.Editor.WriteMessage("\n[错误] 该插件为 智汇CAD全流程管理系统 授权版，请从主程序面板启动。");
             }
 #endif
         }
