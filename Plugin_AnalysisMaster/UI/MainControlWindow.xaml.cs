@@ -674,14 +674,12 @@ namespace Plugin_AnalysisMaster.UI
         }
         private void Close_Click(object sender, RoutedEventArgs e) => this.Close();
         /// <summary>
-        /// 实现无边框窗口的鼠标拖动功能
+        /// 实现标题栏拖动窗口功能
         /// </summary>
         private void TitleBar_MouseLeftButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
         {
-            // 检查是否是鼠标左键按下
             if (e.LeftButton == System.Windows.Input.MouseButtonState.Pressed)
             {
-                // 调用 WPF 窗口自带的拖动方法
                 this.DragMove();
             }
         }
