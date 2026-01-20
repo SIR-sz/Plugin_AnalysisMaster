@@ -137,10 +137,19 @@
             <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" Margin="0,10,0,0">
                 <StackPanel>
                     <GroupBox Header="绘制模式">
-                        <ComboBox x:Name="PathTypeCombo" SelectionChanged="OnPathTypeChanged" Margin="5">
-                            <ComboBoxItem Content="连续线 (Solid)" Tag="Solid" IsSelected="True"/>
-                            <ComboBoxItem Content="阵列样式 (Pattern)" Tag="Pattern"/>
-                        </ComboBox>
+                        <StackPanel>
+                            <TextBlock Text="渲染模式" FontSize="11" Margin="5,2,0,0"/>
+                            <ComboBox x:Name="PathTypeCombo" SelectionChanged="OnPathTypeChanged" Margin="5,2,5,5">
+                                <ComboBoxItem Content="连续线 (Solid)" Tag="Solid" IsSelected="True"/>
+                                <ComboBoxItem Content="阵列样式 (Pattern)" Tag="Pattern"/>
+                            </ComboBox>
+
+                            <TextBlock Text="骨架类型" FontSize="11" Margin="5,2,0,0"/>
+                            <ComboBox x:Name="SkeletonTypeCombo" SelectionChanged="OnParamChanged" Margin="5,2,5,5">
+                                <ComboBoxItem Content="平滑曲线 (Spline)" Tag="True" IsSelected="True"/>
+                                <ComboBoxItem Content="折线/直角 (Polyline)" Tag="False"/>
+                            </ComboBox>
+                        </StackPanel>
                     </GroupBox>
 
                     <GroupBox x:Name="SolidPanel" Header="宽度配置">
@@ -245,15 +254,16 @@
                         <StackPanel>
                             <TextBlock Text="动线颜色" FontSize="11" Margin="0,5,0,0"/>
                             <Rectangle x:Name="ColorPreview" Fill="SteelBlue" Height="25" Cursor="Hand" MouseLeftButtonDown="SelectColor_Click" Margin="0,8" RadiusX="3" RadiusY="3" Stroke="#444"/>
-                            <TextBlock Text="透明度" FontSize="11" Margin="0,5,0,0"/>
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="60"/>
-                                </Grid.ColumnDefinitions>
-                                <Slider x:Name="TransSlider" Minimum="0" Maximum="100" Value="0" ValueChanged="OnParamChanged"/>
-                                <TextBox Grid.Column="1" Text="{Binding ElementName=TransSlider, Path=Value, UpdateSourceTrigger=PropertyChanged, StringFormat={}{0:F0}}" Style="{StaticResource ValueInputStyle}"/>
-                            </Grid>
+
+                            <Button Content="管理资源库 (DWG)" Click="OpenLibraryFolder_Click" Height="30" Margin="0,5,0,5" Background="#3D3D3D" Foreground="#2196F3" BorderBrush="#444" FontSize="11">
+                                <Button.Template>
+                                    <ControlTemplate TargetType="Button">
+                                        <Border Background="{TemplateBinding Background}" CornerRadius="4" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1">
+                                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                        </Border>
+                                    </ControlTemplate>
+                                </Button.Template>
+                            </Button>
                         </StackPanel>
                     </GroupBox>
                 </StackPanel>

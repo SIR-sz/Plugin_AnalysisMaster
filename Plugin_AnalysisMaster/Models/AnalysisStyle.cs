@@ -9,31 +9,30 @@ namespace Plugin_AnalysisMaster.Models
 
     /// <summary>
     /// 存储动线所有样式参数的数据模型。
-    /// 新增 CapIndent 属性用于控制端头缩进，并保留起终点图块名称存储。
+    /// 修改内容：彻底删除了 Transparency 属性，保持模型纯净。
     /// </summary>
     public class AnalysisStyle
     {
         // 1. 基础属性
         public string TargetLayer { get; set; } = "ANALYSIS_LINES";
         public System.Windows.Media.Color MainColor { get; set; } = System.Windows.Media.Colors.SteelBlue;
-        public double Transparency { get; set; } = 0;
         public bool IsCurved { get; set; } = true;
 
         // 2. 几何宽度 (Solid 模式渐变)
         public double StartWidth { get; set; } = 1.0;
-        public double MidWidth { get; set; } = 0.8;
-        public double EndWidth { get; set; } = 0.5;
+        public double MidWidth { get; set; } = 1.0;
+        public double EndWidth { get; set; } = 1.0;
 
         // 3. 端头设置
-        public string StartArrowType { get; set; } = "None"; // 存储真实块名 (如 Cap_Arrow1)
-        public string EndArrowType { get; set; } = "None";   // 存储真实块名
-        public double ArrowSize { get; set; } = 8.0;         // 对应缩放比例
-        public double CapIndent { get; set; } = 0;          // ✨ 新增：起终点共用的缩进距离
+        public string StartArrowType { get; set; } = "None";
+        public string EndArrowType { get; set; } = "None";
+        public double ArrowSize { get; set; } = 1.0;
+        public double CapIndent { get; set; } = 0;
 
         // 4. 路径模式配置
         public PathCategory PathType { get; set; } = PathCategory.Solid;
-        public string SelectedBlockName { get; set; } = "";  // 存储真实块名 (如 Pat_Tree)
-        public double PatternSpacing { get; set; } = 10.0;
+        public string SelectedBlockName { get; set; } = "";
+        public double PatternSpacing { get; set; } = 2.0;
         public double PatternScale { get; set; } = 1.0;
     }
 }
