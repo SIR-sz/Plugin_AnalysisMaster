@@ -682,32 +682,27 @@ namespace Plugin_AnalysisMaster.UI
                 UpdatePreview();
             }
         }
+        // 文件：MainControlWindow.xaml.cs
+
         private void GenerateLegend_Click(object sender, RoutedEventArgs e)
         {
-            // 暂时隐藏窗口，方便 CAD 操作
-            this.Hide();
+            // 1. 暂时隐藏窗口，方便在 CAD 中点选位置
+            this.Visibility = System.Windows.Visibility.Collapsed;
 
             try
             {
-                Document doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
-
-                // 确保同步了当前的图层设置
-                SyncStyleFromUI();
-
-                using (doc.LockDocument())
-                {
-                    // 调用引擎生成图例
-                    GeometryEngine.GenerateLegend(doc, _currentStyle.TargetLayer);
-                }
+                // ✨ 核心修复：将 GeometryEngine.GenerateLegend(...) 改为不带参数的调用
+                // 现在的逻辑是它会自动从图中识别所有样式，不再需要从 UI 传参
+                GeometryEngine.GenerateLegend();
             }
             catch (System.Exception ex)
             {
-                Autodesk.AutoCAD.ApplicationServices.Application.ShowAlertDialog("生成图例出错: " + ex.Message);
+                Autodesk.AutoCAD.ApplicationServices.Application.ShowAlertDialog("生成图例失败: " + ex.Message);
             }
             finally
             {
-                // 操作完成后显示回窗口
-                this.Show();
+                // 2. 无论成功与否，恢复窗口显示
+                this.Visibility = System.Windows.Visibility.Visible;
             }
         }
         private void Close_Click(object sender, RoutedEventArgs e) => this.Close();

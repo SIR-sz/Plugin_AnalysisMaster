@@ -1,7 +1,10 @@
 ﻿<Window x:Class="Plugin_AnalysisMaster.UI.MainControlWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="分析大师" Height="700" Width="320" Topmost="True" WindowStyle="None" AllowsTransparency="True" Background="Transparent">
+        Title="动态曲线助手" Height="750" Width="320" 
+        MinWidth="300" MinHeight="500"
+        Topmost="True" WindowStyle="None" AllowsTransparency="True" Background="Transparent"
+        ResizeMode="CanResizeWithGrip">
 
     <Window.Resources>
         <Style TargetType="TextBlock">
@@ -122,10 +125,9 @@
             <Grid Grid.Row="0" Margin="0,0,0,10" Background="Transparent" MouseLeftButtonDown="TitleBar_MouseLeftButtonDown">
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                     <TextBlock Text="动态曲线助手" Foreground="#E0E0E0" FontSize="15" FontWeight="Bold"/>
-
                     <Button x:Name="AboutBtn" Content="ⓘ" Click="AboutBtn_Click" 
-                FontSize="17" Margin="8,0,0,0" 
-                Background="Transparent" Foreground="#888" BorderBrush="Transparent" Cursor="Hand">
+                            FontSize="17" Margin="8,0,0,0" 
+                            Background="Transparent" Foreground="#888" BorderBrush="Transparent" Cursor="Hand">
                         <Button.Template>
                             <ControlTemplate TargetType="Button">
                                 <ContentPresenter />
@@ -142,23 +144,21 @@
                         </Button.Style>
                     </Button>
                 </StackPanel>
-
                 <Button Content="✕" HorizontalAlignment="Right" Width="24" Height="24" 
-            Background="Transparent" Foreground="#666" BorderBrush="Transparent" Click="Close_Click"/>
+                        Background="Transparent" Foreground="#666" BorderBrush="Transparent" Click="Close_Click"/>
             </Grid>
 
             <Border Grid.Row="1" Background="#000" CornerRadius="5" BorderBrush="#222" BorderThickness="1">
                 <Grid>
                     <Canvas x:Name="PreviewCanvas" ClipToBounds="True"/>
-
                     <Image x:Name="BlockPreviewImage" Width="60" Height="60" 
-               HorizontalAlignment="Right" VerticalAlignment="Bottom" 
-               Margin="0,0,10,10" Opacity="0.8" Stretch="Uniform"/>
+                           HorizontalAlignment="Right" VerticalAlignment="Bottom" 
+                           Margin="0,0,10,10" Opacity="0.8" Stretch="Uniform"/>
                 </Grid>
             </Border>
 
             <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" Margin="0,10,0,0">
-                <StackPanel>
+                <StackPanel Margin="0,0,10,0">
                     <GroupBox Header="绘制模式">
                         <StackPanel>
                             <TextBlock Text="渲染模式" FontSize="11" Margin="5,2,0,0"/>
@@ -166,7 +166,6 @@
                                 <ComboBoxItem Content="连续线 (Solid)" Tag="Solid" IsSelected="True"/>
                                 <ComboBoxItem Content="阵列样式 (Pattern)" Tag="Pattern"/>
                             </ComboBox>
-
                             <TextBlock Text="骨架类型" FontSize="11" Margin="5,2,0,0"/>
                             <ComboBox x:Name="SkeletonTypeCombo" SelectionChanged="OnParamChanged" Margin="5,2,5,5">
                                 <ComboBoxItem Content="平滑曲线 (Spline)" Tag="True" IsSelected="True"/>
@@ -211,20 +210,11 @@
                         <StackPanel>
                             <TextBlock Text="图元样式 1" FontSize="11" Margin="0,5,0,0"/>
                             <ComboBox x:Name="BlockLibraryCombo" SelectionChanged="OnParamChanged" Margin="0,5"/>
-
-                            <Grid Margin="0,2,0,5">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto"/>
-                                    <ColumnDefinition Width="*"/>
-                                </Grid.ColumnDefinitions>
-                                <CheckBox x:Name="CompositeCheckBox" Content="组合模式" Foreground="#2196F3" VerticalAlignment="Center" Click="OnCompositeToggle_Click"/>
-                            </Grid>
-
+                            <CheckBox x:Name="CompositeCheckBox" Content="组合模式" Foreground="#2196F3" VerticalAlignment="Center" Click="OnCompositeToggle_Click" Margin="0,5"/>
                             <StackPanel x:Name="CompositeSettingsPanel" Visibility="Collapsed">
                                 <TextBlock Text="图元样式 2" FontSize="11" Margin="0,5,0,0"/>
                                 <ComboBox x:Name="BlockLibraryCombo2" SelectionChanged="OnParamChanged" Margin="0,5"/>
                             </StackPanel>
-
                             <TextBlock Text="排列间距" FontSize="11" Margin="0,5,0,0"/>
                             <Grid>
                                 <Grid.ColumnDefinitions>
@@ -234,7 +224,6 @@
                                 <Slider x:Name="SpacingSlider" Minimum="0.1" Maximum="10000" Value="2.0" ValueChanged="OnParamChanged"/>
                                 <TextBox Grid.Column="1" Text="{Binding ElementName=SpacingSlider, Path=Value, UpdateSourceTrigger=PropertyChanged, StringFormat={}{0:F1}}" Style="{StaticResource ValueInputStyle}"/>
                             </Grid>
-
                             <TextBlock Text="单元缩放" FontSize="11" Margin="0,5,0,0"/>
                             <Grid>
                                 <Grid.ColumnDefinitions>
@@ -253,12 +242,10 @@
                             <ComboBox x:Name="StartArrowCombo" SelectionChanged="OnParamChanged" Margin="0,2">
                                 <ComboBoxItem Content="无" Tag="None" IsSelected="True"/>
                             </ComboBox>
-
                             <TextBlock Text="结束端" FontSize="11" Margin="0,5,0,0"/>
                             <ComboBox x:Name="EndArrowCombo" SelectionChanged="OnParamChanged" Margin="0,2">
                                 <ComboBoxItem Content="无" Tag="None" IsSelected="True"/>
                             </ComboBox>
-
                             <TextBlock Text="端头缩放" FontSize="11" Margin="0,5,0,0"/>
                             <Grid>
                                 <Grid.ColumnDefinitions>
@@ -268,7 +255,6 @@
                                 <Slider x:Name="ArrowSizeSlider" Minimum="0.1" Maximum="1000" Value="1.0" ValueChanged="OnParamChanged"/>
                                 <TextBox Grid.Column="1" Text="{Binding ElementName=ArrowSizeSlider, Path=Value, UpdateSourceTrigger=PropertyChanged, StringFormat={}{0:F1}}" Style="{StaticResource ValueInputStyle}"/>
                             </Grid>
-
                             <TextBlock Text="端头缩进" FontSize="11" Margin="0,5,0,0"/>
                             <Grid>
                                 <Grid.ColumnDefinitions>
@@ -285,7 +271,7 @@
                         <StackPanel>
                             <TextBlock Text="动线颜色" FontSize="11" Margin="0,5,0,0"/>
                             <Rectangle x:Name="ColorPreview" Fill="SteelBlue" Height="25" Cursor="Hand" MouseLeftButtonDown="SelectColor_Click" Margin="0,8" RadiusX="3" RadiusY="3" Stroke="#444"/>
-                            <Button Content="管理资源库 (DWG)" Click="OpenLibraryFolder_Click" Height="30" Margin="0,5,0,5" Background="#3D3D3D" Foreground="#2196F3" BorderBrush="#444" FontSize="11">
+                            <Button Content="管理资源库 (DWG)" Click="OpenLibraryFolder_Click" Height="30" Margin="0,5" Background="#3D3D3D" Foreground="#2196F3" BorderBrush="#444" FontSize="11">
                                 <Button.Template>
                                     <ControlTemplate TargetType="Button">
                                         <Border Background="{TemplateBinding Background}" CornerRadius="4" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1">
@@ -300,7 +286,6 @@
                     <GroupBox Header="动画记录设置">
                         <StackPanel>
                             <CheckBox x:Name="IsAnimatedCheckBox" Content="绘制时自动记录动画轨迹" Foreground="#2196F3" Margin="0,5" Click="OnParamChanged"/>
-
                             <TextBlock Text="采样间距 (点位密度)" FontSize="11" Margin="0,5,0,0"/>
                             <Grid>
                                 <Grid.ColumnDefinitions>
@@ -321,11 +306,7 @@
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
-
-                <Button Content="开始绘制" 
-                        Click="StartDraw_Click" 
-                        Height="35" Margin="0,0,2,0"
-                        Background="#2196F3" Foreground="White" FontWeight="Bold">
+                <Button Content="开始绘制" Click="StartDraw_Click" Height="35" Margin="0,0,2,0" Background="#2196F3" Foreground="White" FontWeight="Bold">
                     <Button.Template>
                         <ControlTemplate TargetType="Button">
                             <Border Background="{TemplateBinding Background}" CornerRadius="4">
@@ -334,12 +315,7 @@
                         </ControlTemplate>
                     </Button.Template>
                 </Button>
-
-                <Button Grid.Column="1" 
-        Content="🎬 动画管理" 
-        Click="BtnOpenAnimManager_Click" 
-        Height="35" Margin="2,0,2,0"
-        Background="#4CAF50" Foreground="White" FontWeight="Bold">
+                <Button Grid.Column="1" Content="🎬 动画管理" Click="BtnOpenAnimManager_Click" Height="35" Margin="2,0,2,0" Background="#4CAF50" Foreground="White" FontWeight="Bold">
                     <Button.Template>
                         <ControlTemplate TargetType="Button">
                             <Border Background="{TemplateBinding Background}" CornerRadius="4">
@@ -348,12 +324,7 @@
                         </ControlTemplate>
                     </Button.Template>
                 </Button>
-
-                <Button Grid.Column="2" 
-                        Content="生成图例" 
-                        Click="GenerateLegend_Click" 
-                        Height="35" Margin="2,0,0,0"
-                        Background="#FF9800" Foreground="White" FontWeight="Bold">
+                <Button Grid.Column="2" Content="生成图例" Click="GenerateLegend_Click" Height="35" Margin="2,0,0,0" Background="#FF9800" Foreground="White" FontWeight="Bold">
                     <Button.Template>
                         <ControlTemplate TargetType="Button">
                             <Border Background="{TemplateBinding Background}" CornerRadius="4">

@@ -997,75 +997,80 @@ namespace Plugin_AnalysisMaster.Services
             }
         }
         /// <summary>
-        /// 图例生成逻辑。
-        /// 修改逻辑：由于 RenderPath 签名变更，需要在此处传递当前文档的 Editor 对象。
+        /// 全局图例生成逻辑：从扩展字典读取样式并生成图例
         /// </summary>
-        public static void GenerateLegend(Document doc, string targetLayer)
+        public static void GenerateLegend()
         {
+            Document doc = Application.DocumentManager.MdiActiveDocument;
+            if (doc == null) return;
             Editor ed = doc.Editor;
             Database db = doc.Database;
 
-            // 1. 框选图元
-            SelectionFilter filter = new SelectionFilter(new TypedValue[] {
-                new TypedValue(0, "LWPOLYLINE,POLYLINE,SPLINE,INSERT"),
-                new TypedValue(8, targetLayer)
-            });
-
-            PromptSelectionResult selRes = ed.GetSelection(filter);
-            if (selRes.Status != PromptStatus.OK) return;
-
-            // 2. 识别并归类样式
-            var uniqueStyles = new Dictionary<string, AnalysisStyle>();
-
+            using (DocumentLock dl = doc.LockDocument())
             using (Transaction tr = db.TransactionManager.StartTransaction())
             {
-                foreach (SelectedObject selObj in selRes.Value)
+                // 1. 搜寻图中所有分析线样式（从扩展字典中搜寻）
+                var uniqueStyles = new Dictionary<string, AnalysisStyle>();
+                BlockTableRecord curSpace = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForRead);
+
+                foreach (ObjectId id in curSpace)
                 {
-                    Entity ent = tr.GetObject(selObj.ObjectId, OpenMode.ForRead) as Entity;
-                    if (ent == null || ent.XData == null) continue;
+                    Entity ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
+                    // ✨ 修改：从扩展字典读取 ANALYSIS_ANIM_DATA
+                    if (ent == null || ent.ExtensionDictionary.IsNull) continue;
 
-                    TypedValue[] xdata = ent.XData.AsArray();
-                    var styleValue = xdata.FirstOrDefault(tv => tv.TypeCode == (int)DxfCode.ExtendedDataAsciiString);
-                    if (styleValue.Value == null) continue;
+                    DBDictionary dict = tr.GetObject(ent.ExtensionDictionary, OpenMode.ForRead) as DBDictionary;
+                    if (!dict.Contains("ANALYSIS_ANIM_DATA")) continue;
 
-                    string fingerprint = styleValue.Value.ToString();
-                    if (!uniqueStyles.ContainsKey(fingerprint))
+                    Xrecord xRec = tr.GetObject(dict.GetAt("ANALYSIS_ANIM_DATA"), OpenMode.ForRead) as Xrecord;
+                    using (ResultBuffer rb = xRec.Data)
                     {
-                        string[] parts = fingerprint.Split('|');
-                        if (parts.Length < 7) continue;
+                        if (rb == null) continue;
+                        TypedValue[] dataArr = rb.AsArray();
+                        string fingerprint = dataArr[0].Value.ToString();
 
-                        var style = new AnalysisStyle();
-                        style.PathType = (PathCategory)System.Enum.Parse(typeof(PathCategory), parts[0]);
-                        style.SelectedBlockName = parts[1];
-                        style.SelectedBlockName2 = parts[2];
-                        style.IsComposite = bool.Parse(parts[3]);
+                        if (!uniqueStyles.ContainsKey(fingerprint))
+                        {
+                            string[] parts = fingerprint.Split('|');
+                            if (parts.Length < 7) continue;
 
-                        var colorStr = parts[4];
-                        style.MainColor = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(colorStr);
+                            var style = new AnalysisStyle();
+                            style.PathType = (PathCategory)Enum.Parse(typeof(PathCategory), parts[0]);
+                            style.SelectedBlockName = parts[1];
+                            style.SelectedBlockName2 = parts[2];
+                            style.IsComposite = bool.Parse(parts[3]);
+                            var colorStr = parts[4];
+                            style.MainColor = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(colorStr);
+                            style.StartArrowType = parts[5];
+                            style.EndArrowType = parts[6];
 
-                        style.StartArrowType = parts[5];
-                        style.EndArrowType = parts[6];
+                            // 图例固定参数，防止由于缩进太大导致不显示
+                            style.ArrowSize = 1.0;
+                            style.PatternScale = 1.0;
+                            style.CapIndent = 2.0;
+                            style.IsAnimated = false;
 
-                        style.ArrowSize = 1.0;
-                        style.PatternScale = 1.0;
-                        style.IsAnimated = false; // 图例生成不需要动画
-
-                        uniqueStyles.Add(fingerprint, style);
+                            uniqueStyles.Add(fingerprint, style);
+                        }
                     }
                 }
 
-                if (uniqueStyles.Count == 0) return;
+                if (uniqueStyles.Count == 0)
+                {
+                    ed.WriteMessage("\n[提示] 图中未检测到带有动画数据的分析线，无法生成图例。");
+                    return;
+                }
 
-                // 3. 指定放置位置
+                // 2. 指定放置位置
                 PromptPointResult ppr = ed.GetPoint("\n请指定图例放置起点: ");
                 if (ppr.Status != PromptStatus.OK) return;
 
                 Point3d insertPt = ppr.Value;
                 BlockTableRecord btr = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
 
-                // 4. 绘制图例（一列排放）
-                double rowHeight = 30.0;
-                double lineLength = 60.0;
+                // 3. 绘制图例
+                double rowHeight = 15.0; // 缩小行高
+                double lineLength = 40.0;
                 int index = 0;
 
                 foreach (var style in uniqueStyles.Values)
@@ -1075,12 +1080,22 @@ namespace Plugin_AnalysisMaster.Services
 
                     using (Line samplePath = new Line(start, end))
                     {
-                        // ✨ 修改：增加 ed 参数传递
+                        // ✨ 修复：传入 ed 参数，确保调用链完整
                         RenderPath(btr, tr, ed, samplePath, style, new ObjectIdCollection());
+
+                        // 添加文字标注
+                        MText mt = new MText();
+                        mt.Contents = style.PathType == PathCategory.Solid ? "连续线样式" : $"阵列样式({style.SelectedBlockName})";
+                        mt.Location = new Point3d(end.X + 5, end.Y, 0);
+                        mt.Height = 2.5;
+                        mt.Attachment = AttachmentPoint.MiddleLeft;
+                        btr.AppendEntity(mt);
+                        tr.AddNewlyCreatedDBObject(mt, true);
                     }
                     index++;
                 }
                 tr.Commit();
+                ed.WriteMessage($"\n[成功] 已根据图中数据生成 {uniqueStyles.Count} 项图例。");
             }
         }
 
