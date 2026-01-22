@@ -188,22 +188,37 @@ namespace Plugin_AnalysisMaster.UI
             }
         }
 
+        // 文件：AnimationWindow.xaml.cs
+
         private AnimPathItem CreatePathItemFromEntity(Transaction tr, Entity ent, string fingerprint)
         {
             string layerName = ent.Layer;
 
-            // 从指纹解析颜色
             string[] parts = fingerprint.Split('|');
-            var colorStr = parts[4];
-            var mediaColor = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(colorStr);
 
-            return new AnimPathItem
+            // ✨ 核心修复：索引从 4 改为 5
+            // 现在的顺序：0:PathType | 1:IsCurved | 2:Block1 | 3:Block2 | 4:IsComposite | 5:Color | ...
+            if (parts.Length < 6) return null; // 基础安全检查
+
+            string colorStr = parts[5];
+
+            try
             {
-                Id = ent.ObjectId,
-                Name = $"图层: {layerName}",
-                PathColor = mediaColor,
-                GroupNumber = 1
-            };
+                var mediaColor = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(colorStr);
+
+                return new AnimPathItem
+                {
+                    Id = ent.ObjectId,
+                    Name = $"图层: {layerName}",
+                    PathColor = mediaColor,
+                    GroupNumber = 1
+                };
+            }
+            catch
+            {
+                // 如果解析失败（旧数据），可以给一个默认颜色，防止程序直接崩溃
+                return new AnimPathItem { Id = ent.ObjectId, Name = $"图层: {layerName}", PathColor = Colors.SteelBlue, GroupNumber = 1 };
+            }
         }
 
         #endregion

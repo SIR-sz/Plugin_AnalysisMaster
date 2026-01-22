@@ -279,7 +279,11 @@ namespace Plugin_AnalysisMaster.Services
                 TypedValue[] dataArr = rb.AsArray();
                 string fingerprint = dataArr[0].Value.ToString();
                 string[] parts = fingerprint.Split('|');
-                var colorStr = parts[4];
+
+                // ✨ 核心修复：索引从 4 改为 5
+                if (parts.Length < 6) return null;
+                var colorStr = parts[5];
+
                 var mediaColor = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(colorStr);
 
                 List<Point3d> pts = new List<Point3d>();
@@ -409,20 +413,23 @@ namespace Plugin_AnalysisMaster.Services
                     Curve path = CreatePathCurve(points, style.IsCurved);
                     using (path)
                     {
-                        // 1. 渲染几何体（此时内部不采样，很快）
+                        // 1. 渲染几何体
                         RenderPath(btr, tr, ed, path, style, allIds);
 
-                        // 2. ✨ 核心修复：执行一次“骨架线采样”，并挂在第一个实体上
-                        if (style.IsAnimated && allIds.Count > 0)
+                        // ✨ 修改：只要生成了实体，就写入样式数据（指纹）
+                        if (allIds.Count > 0)
                         {
-                            // 获取骨架线的采样点
-                            List<Point3d> skeletonPoints = SampleCurve(path, style.SamplingInterval);
-
-                            // 开启写模式打开第一个实体
                             Entity headEnt = tr.GetObject(allIds[0], OpenMode.ForWrite) as Entity;
                             if (headEnt != null)
                             {
-                                // 写入指纹（包含 Guid 和采样点）
+                                List<Point3d> skeletonPoints = null;
+                                // 只有开启动画时才进行耗时的曲线采样
+                                if (style.IsAnimated)
+                                {
+                                    skeletonPoints = SampleCurve(path, style.SamplingInterval);
+                                }
+
+                                // 写入数据（现在这个方法内部会处理 points 为 null 的情况）
                                 WriteFingerprint(tr, headEnt, style, skeletonPoints);
                             }
                         }
@@ -965,11 +972,9 @@ namespace Plugin_AnalysisMaster.Services
             return points;
         }
         // --- 3. 抽离出的指纹写入逻辑（私有辅助） ---
+        // 文件：GeometryEngine.cs -> WriteFingerprint 方法
         private static void WriteFingerprint(Transaction tr, Entity ent, AnalysisStyle style, List<Point3d> sampledPoints)
         {
-            // 如果没有采样点，则不写入动画数据
-            if (!style.IsAnimated || sampledPoints == null || sampledPoints.Count == 0) return;
-
             if (ent.ExtensionDictionary.IsNull)
             {
                 ent.UpgradeOpen();
@@ -978,19 +983,27 @@ namespace Plugin_AnalysisMaster.Services
 
             DBDictionary dict = (DBDictionary)tr.GetObject(ent.ExtensionDictionary, OpenMode.ForWrite);
 
-            // 生成包含 GUID 的唯一指纹
-            string fingerprint = $"{style.PathType}|{style.IsCurved}|{style.SelectedBlockName}|{DateTime.Now.Ticks}|{style.MainColor}|{Guid.NewGuid()}";
+            // ✨ 核心修复：直接使用 style.MainColor.ToString() 替代 ColorSerializationHelper
+            // 它会生成类似 "#AARRGGBB" 的字符串，这是最通用的格式
+            string fingerprint = $"{style.PathType}|{style.IsCurved}|{style.SelectedBlockName}|{style.SelectedBlockName2}|{style.IsComposite}|" +
+                                 $"{style.MainColor.ToString()}|{style.StartArrowType}|{style.EndArrowType}";
 
             using (Xrecord xRec = new Xrecord())
             {
                 ResultBuffer rb = new ResultBuffer();
                 rb.Add(new TypedValue((int)DxfCode.Text, fingerprint));
-                rb.Add(new TypedValue((int)DxfCode.Int32, sampledPoints.Count));
 
-                foreach (Point3d pt in sampledPoints)
+                int count = (sampledPoints != null) ? sampledPoints.Count : 0;
+                rb.Add(new TypedValue((int)DxfCode.Int32, count));
+
+                if (sampledPoints != null)
                 {
-                    rb.Add(new TypedValue((int)DxfCode.XCoordinate, pt));
+                    foreach (Point3d pt in sampledPoints)
+                    {
+                        rb.Add(new TypedValue((int)DxfCode.XCoordinate, pt));
+                    }
                 }
+
                 xRec.Data = rb;
                 dict.SetAt("ANALYSIS_ANIM_DATA", xRec);
                 tr.AddNewlyCreatedDBObject(xRec, true);
@@ -1016,7 +1029,6 @@ namespace Plugin_AnalysisMaster.Services
                 foreach (ObjectId id in curSpace)
                 {
                     Entity ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
-                    // ✨ 修改：从扩展字典读取 ANALYSIS_ANIM_DATA
                     if (ent == null || ent.ExtensionDictionary.IsNull) continue;
 
                     DBDictionary dict = tr.GetObject(ent.ExtensionDictionary, OpenMode.ForRead) as DBDictionary;
@@ -1032,19 +1044,27 @@ namespace Plugin_AnalysisMaster.Services
                         if (!uniqueStyles.ContainsKey(fingerprint))
                         {
                             string[] parts = fingerprint.Split('|');
-                            if (parts.Length < 7) continue;
+                            // ✨ 确保数组长度足够（现在至少有 8 个字段）
+                            if (parts.Length < 8) continue;
 
                             var style = new AnalysisStyle();
-                            style.PathType = (PathCategory)Enum.Parse(typeof(PathCategory), parts[0]);
-                            style.SelectedBlockName = parts[1];
-                            style.SelectedBlockName2 = parts[2];
-                            style.IsComposite = bool.Parse(parts[3]);
-                            var colorStr = parts[4];
-                            style.MainColor = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(colorStr);
-                            style.StartArrowType = parts[5];
-                            style.EndArrowType = parts[6];
 
-                            // 图例固定参数，防止由于缩进太大导致不显示
+                            // ✨ 严格按照 WriteFingerprint 的顺序重新对齐索引：
+                            // 顺序：0:PathType | 1:IsCurved | 2:Block1 | 3:Block2 | 4:IsComposite | 5:Color | 6:StartArrow | 7:EndArrow
+
+                            style.PathType = (PathCategory)Enum.Parse(typeof(PathCategory), parts[0]);
+                            style.IsCurved = bool.Parse(parts[1]);      // 索引 1 是布尔值
+                            style.SelectedBlockName = parts[2];         // 索引 2 是字符串
+                            style.SelectedBlockName2 = parts[3];        // 索引 3 是字符串
+                            style.IsComposite = bool.Parse(parts[4]);   // 索引 4 是布尔值
+
+                            var colorStr = parts[5];                    // 索引 5 是颜色字符串
+                            style.MainColor = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(colorStr);
+
+                            style.StartArrowType = parts[6];            // 索引 6 是字符串
+                            style.EndArrowType = parts[7];              // 索引 7 是字符串
+
+                            // 固定图例显示参数
                             style.ArrowSize = 1.0;
                             style.PatternScale = 1.0;
                             style.CapIndent = 2.0;
