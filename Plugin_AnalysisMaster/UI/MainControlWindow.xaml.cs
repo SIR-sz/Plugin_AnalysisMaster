@@ -65,7 +65,11 @@ namespace Plugin_AnalysisMaster.UI
         }
         /// <summary>
         /// 将静态模型中的数据回填到 UI 界面。
-        /// 修改逻辑：增加了对 SkeletonTypeCombo 的状态恢复，确保重新打开面板时保留骨架类型设置。
+        /// 修改逻辑：增加了对动画开关 IsAnimated 和延迟时间 AnimationDelay 的状态恢复。
+        /// </summary>
+        /// <summary>
+        /// 将静态模型中的数据回填到 UI 界面。
+        /// 修改逻辑：增加了对采样间距 SamplingInterval 的恢复。
         /// </summary>
         private void ApplyStyleToUI()
         {
@@ -81,7 +85,7 @@ namespace Plugin_AnalysisMaster.UI
                 }
             }
 
-            // 2. ✨ 恢复骨架类型选中项
+            // 2. 恢复骨架类型选中项
             if (SkeletonTypeCombo != null)
             {
                 foreach (ComboBoxItem item in SkeletonTypeCombo.Items)
@@ -94,7 +98,7 @@ namespace Plugin_AnalysisMaster.UI
                 }
             }
 
-            // 3. 恢复下拉框选中项 (阵列单元、起终点)
+            // 3. 恢复下拉框选中项
             if (BlockLibraryCombo != null)
             {
                 foreach (ComboBoxItem item in BlockLibraryCombo.Items)
@@ -111,7 +115,7 @@ namespace Plugin_AnalysisMaster.UI
                     if (item.Tag.ToString() == _currentStyle.EndArrowType) { EndArrowCombo.SelectedItem = item; break; }
             }
 
-            // 4. 恢复滑块与预览块 (保持不变...)
+            // 4. 恢复滑块与颜色
             if (StartWidthSlider != null) StartWidthSlider.Value = _currentStyle.StartWidth;
             if (MidWidthSlider != null) MidWidthSlider.Value = _currentStyle.MidWidth;
             if (EndWidthSlider != null) EndWidthSlider.Value = _currentStyle.EndWidth;
@@ -120,6 +124,12 @@ namespace Plugin_AnalysisMaster.UI
             if (ArrowSizeSlider != null) ArrowSizeSlider.Value = _currentStyle.ArrowSize;
             if (CapIndentSlider != null) CapIndentSlider.Value = _currentStyle.CapIndent;
             if (ColorPreview != null) ColorPreview.Fill = new SolidColorBrush(_currentStyle.MainColor);
+
+            // 5. 恢复动画设置状态
+            if (IsAnimatedCheckBox != null) IsAnimatedCheckBox.IsChecked = _currentStyle.IsAnimated;
+            if (AnimationDelaySlider != null) AnimationDelaySlider.Value = _currentStyle.AnimationDelay;
+            // ✨ 恢复采样间距
+            if (SamplingIntervalSlider != null) SamplingIntervalSlider.Value = _currentStyle.SamplingInterval;
         }
         /// <summary>
         /// 加载资源库并同时填充两个图元下拉框。
@@ -196,7 +206,7 @@ namespace Plugin_AnalysisMaster.UI
 
         /// <summary>
         /// 将 UI 数值同步到静态模型。
-        /// 修改逻辑：增加了对 IsComposite 和 SelectedBlockName2 的同步。
+        /// 修改逻辑：增加了对采样间距 SamplingInterval 的同步。
         /// </summary>
         private void SyncStyleFromUI()
         {
@@ -208,11 +218,9 @@ namespace Plugin_AnalysisMaster.UI
             if (SkeletonTypeCombo != null && SkeletonTypeCombo.SelectedItem is ComboBoxItem skelItem)
                 _currentStyle.IsCurved = bool.Parse(skelItem.Tag.ToString());
 
-            // 同步图元 1
             if (BlockLibraryCombo != null && BlockLibraryCombo.SelectedItem is ComboBoxItem patItem)
                 _currentStyle.SelectedBlockName = patItem.Tag.ToString();
 
-            // ✨ 同步组合模式及图元 2
             _currentStyle.IsComposite = CompositeCheckBox?.IsChecked ?? false;
             if (BlockLibraryCombo2 != null && BlockLibraryCombo2.SelectedItem is ComboBoxItem patItem2)
                 _currentStyle.SelectedBlockName2 = patItem2.Tag.ToString();
@@ -230,6 +238,32 @@ namespace Plugin_AnalysisMaster.UI
             _currentStyle.PatternScale = PatternScaleSlider?.Value ?? 1.0;
             _currentStyle.ArrowSize = ArrowSizeSlider?.Value ?? 1.0;
             _currentStyle.CapIndent = CapIndentSlider?.Value ?? 0.0;
+
+            // 同步动画参数
+            _currentStyle.IsAnimated = IsAnimatedCheckBox?.IsChecked ?? false;
+            _currentStyle.AnimationDelay = (int)(AnimationDelaySlider?.Value ?? 10);
+            // ✨ 同步采样间距
+            _currentStyle.SamplingInterval = SamplingIntervalSlider?.Value ?? 5.0;
+        }
+        /// <summary>
+        /// 触发动画回放逻辑。
+        /// 修改逻辑：调用 GeometryEngine.PlayPathAnimation 启动拾取和播放流程。
+        /// </summary>
+        private void PlayAnimation_Click(object sender, RoutedEventArgs e)
+        {
+            this.Hide();
+            try
+            {
+                GeometryEngine.PlayPathAnimation();
+            }
+            catch (System.Exception ex)
+            {
+                Autodesk.AutoCAD.ApplicationServices.Application.ShowAlertDialog("回放失败：" + ex.Message);
+            }
+            finally
+            {
+                this.Show();
+            }
         }
         /// <summary>
         /// 刷新预览画布的核心逻辑。

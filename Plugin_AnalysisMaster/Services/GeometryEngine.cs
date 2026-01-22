@@ -3,21 +3,210 @@ using Autodesk.AutoCAD.Colors;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.EditorInput;
 using Autodesk.AutoCAD.Geometry;
+using Autodesk.AutoCAD.GraphicsInterface;
+using Autodesk.AutoCAD.Runtime;
 using Plugin_AnalysisMaster.Models;
 using System;
 using System.Collections.Generic; // ✨ 新增
 using System.IO;
 using System.Linq;                // ✨ 新增
 using System.Reflection;
+using System.Threading;
+using System.Threading.Tasks;
 using Polyline = Autodesk.AutoCAD.DatabaseServices.Polyline;
 
 namespace Plugin_AnalysisMaster.Services
 {
     public static class GeometryEngine
     {
+
         private const string RegAppName = "ANALYSIS_MASTER_STYLE";
+        // 存放每条路径预读取的数据，避免循环中操作数据库
+        private class PathPlaybackData
+        {
+            public List<Point3d> Points { get; set; }
+            public Autodesk.AutoCAD.Colors.Color Color { get; set; }
+            public string Layer { get; set; }
+            public ObjectId OriginalId { get; set; }
+        }
+
         /// <summary>
-        /// 动线绘制主入口：支持多点连续拾取与自动打组
+        /// 异步播放序列逻辑
+        /// </summary>
+        public static async Task PlaySequenceAsync(
+            List<AnimPathItem> items,
+            double thickness,
+            bool isLoop,
+            bool isPersistent,
+            CancellationToken token)
+        {
+            Document doc = Application.DocumentManager.MdiActiveDocument;
+            if (doc == null) return;
+            Editor ed = doc.Editor;
+
+            // 1. 预读取所有数据到内存
+            List<PathPlaybackData> allData = new List<PathPlaybackData>();
+            using (doc.LockDocument())
+            using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
+            {
+                foreach (var item in items)
+                {
+                    var data = FetchPathData(tr, item.Id);
+                    if (data != null) allData.Add(data);
+                }
+                tr.Commit();
+            }
+
+            if (allData.Count == 0) return;
+
+            // 记录所有已创建的瞬态对象，用于最后统一清理
+            List<Polyline> activeTransients = new List<Polyline>();
+            IntegerCollection vps = new IntegerCollection();
+
+            try
+            {
+                do
+                {
+                    // A. 隐藏所有原始线条
+                    ToggleEntitiesVisibility(items.Select(i => i.Id), false);
+
+                    // 按组号分组并排序
+                    var groupedData = items
+                        .Select((item, index) => new { item, data = allData.FirstOrDefault(d => d.OriginalId == item.Id) })
+                        .Where(x => x.data != null)
+                        .GroupBy(x => x.item.GroupNumber)
+                        .OrderBy(g => g.Key);
+
+                    foreach (var group in groupedData)
+                    {
+                        if (token.IsCancellationRequested) return;
+
+                        List<Polyline> currentGroupLines = new List<Polyline>();
+                        var groupPaths = group.ToList();
+
+                        // B. 初始化本组所有瞬态线（显示起点）
+                        foreach (var path in groupPaths)
+                        {
+                            Polyline pl = new Polyline();
+                            pl.Color = path.data.Color;
+                            pl.Layer = path.data.Layer;
+                            pl.ConstantWidth = thickness; // 应用演示加粗
+                            pl.AddVertexAt(0, new Point2d(path.data.Points[0].X, path.data.Points[0].Y), 0, 0, 0);
+
+                            TransientManager.CurrentTransientManager.AddTransient(pl, TransientDrawingMode.DirectTopmost, 128, vps);
+                            currentGroupLines.Add(pl);
+                            activeTransients.Add(pl);
+                        }
+
+                        // C. 组内同步生长循环
+                        int maxSteps = groupPaths.Max(p => p.data.Points.Count);
+                        for (int step = 1; step < maxSteps; step++)
+                        {
+                            if (token.IsCancellationRequested) return;
+
+                            for (int i = 0; i < groupPaths.Count; i++)
+                            {
+                                var pathData = groupPaths[i].data;
+                                if (step < pathData.Points.Count)
+                                {
+                                    currentGroupLines[i].AddVertexAt(step, new Point2d(pathData.Points[step].X, pathData.Points[step].Y), 0, 0, 0);
+                                    TransientManager.CurrentTransientManager.UpdateTransient(currentGroupLines[i], vps);
+                                }
+                            }
+
+                            Autodesk.AutoCAD.Internal.Utils.FlushGraphics();
+                            await Task.Delay(20, token); // 使用带 Token 的延迟
+                        }
+                    }
+
+                    if (!isLoop) break;
+
+                    // 循环模式下，重新开始前清理一遍
+                    ClearTransients(activeTransients, vps);
+                    activeTransients.Clear();
+                    await Task.Delay(500, token); // 循环间隔
+
+                } while (isLoop && !token.IsCancellationRequested);
+            }
+            catch (OperationCanceledException)
+            {
+                // 捕获取消异常，不向外抛出
+            }
+            finally
+            {
+                // D. 最终清理
+                ClearTransients(activeTransients, vps);
+                ToggleEntitiesVisibility(items.Select(i => i.Id), true);
+                ed.UpdateScreen();
+            }
+        }
+
+        // 辅助方法：读取实体数据
+        private static PathPlaybackData FetchPathData(Transaction tr, ObjectId id)
+        {
+            Entity ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
+            if (ent == null || ent.ExtensionDictionary.IsNull) return null;
+
+            DBDictionary dict = tr.GetObject(ent.ExtensionDictionary, OpenMode.ForRead) as DBDictionary;
+            if (!dict.Contains("ANALYSIS_ANIM_DATA")) return null;
+
+            Xrecord xRec = tr.GetObject(dict.GetAt("ANALYSIS_ANIM_DATA"), OpenMode.ForRead) as Xrecord;
+            using (ResultBuffer rb = xRec.Data)
+            {
+                TypedValue[] dataArr = rb.AsArray();
+                // 解析指纹获取颜色
+                string fingerprint = dataArr[0].Value.ToString();
+                string[] parts = fingerprint.Split('|');
+                var colorStr = parts[4];
+                var mediaColor = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(colorStr);
+
+                List<Point3d> pts = new List<Point3d>();
+                for (int i = 2; i < dataArr.Length; i++)
+                {
+                    if (dataArr[i].TypeCode == (int)DxfCode.XCoordinate)
+                        pts.Add((Point3d)dataArr[i].Value);
+                }
+
+                return new PathPlaybackData
+                {
+                    Points = pts,
+                    Color = Autodesk.AutoCAD.Colors.Color.FromRgb(mediaColor.R, mediaColor.G, mediaColor.B),
+                    Layer = ent.Layer,
+                    OriginalId = id
+                };
+            }
+        }
+
+        // 辅助方法：清理瞬态
+        private static void ClearTransients(List<Polyline> lines, IntegerCollection vps)
+        {
+            foreach (var line in lines)
+            {
+                TransientManager.CurrentTransientManager.EraseTransient(line, vps);
+                line.Dispose();
+            }
+        }
+
+        // 辅助方法：批量切换可见性
+        private static void ToggleEntitiesVisibility(IEnumerable<ObjectId> ids, bool visible)
+        {
+            Document doc = Application.DocumentManager.MdiActiveDocument;
+            using (doc.LockDocument())
+            using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
+            {
+                foreach (var id in ids)
+                {
+                    Entity ent = tr.GetObject(id, OpenMode.ForWrite) as Entity;
+                    if (ent != null) ent.Visible = visible;
+                }
+                tr.Commit();
+            }
+        }
+
+
+        /// <summary>
+        /// 动线绘制主入口：支持多点连续拾取与自动打组。
+        /// 修改逻辑：将 Editor 对象显式传递给下级渲染方法以支持动画。
         /// </summary>
         public static void DrawAnalysisLine(Point3dCollection inputPoints, AnalysisStyle style)
         {
@@ -69,8 +258,8 @@ namespace Plugin_AnalysisMaster.Services
                     Curve path = CreatePathCurve(points, style.IsCurved);
                     using (path)
                     {
-                        // ✨ 修改：直接调用 RenderPath 封装逻辑
-                        RenderPath(btr, tr, path, style, allIds);
+                        // ✨ 修改：增加 ed 参数传递
+                        RenderPath(btr, tr, ed, path, style, allIds);
                     }
 
                     if (allIds.Count > 1)
@@ -86,10 +275,10 @@ namespace Plugin_AnalysisMaster.Services
             }
         }
         /// <summary>
-        /// ✨ 渲染路径封装：统一处理修剪、主体渲染和端头渲染
-        /// 解决 CS0103 报错，并供 DrawAnalysisLine 和 GenerateLegend 共同调用
+        /// 渲染路径封装：统一处理修剪、主体渲染和端头渲染。
+        /// 修改逻辑：增加 Editor 参数接收，并将其透传给主体渲染方法。
         /// </summary>
-        public static void RenderPath(BlockTableRecord btr, Transaction tr, Curve path, AnalysisStyle style, ObjectIdCollection allIds)
+        public static void RenderPath(BlockTableRecord btr, Transaction tr, Editor ed, Curve path, AnalysisStyle style, ObjectIdCollection allIds)
         {
             double indent = style.CapIndent;
             // 修剪路径（处理缩进）
@@ -98,7 +287,8 @@ namespace Plugin_AnalysisMaster.Services
             if (trimmedPath != null)
             {
                 // 1. 渲染主体（实线或阵列）
-                RenderBody(btr, tr, trimmedPath, style, allIds);
+                // ✨ 修改：透传 ed 参数
+                RenderBody(btr, tr, ed, trimmedPath, style, allIds);
 
                 // 2. 渲染起始端
                 RenderHead(btr, tr, path, style, allIds);
@@ -112,15 +302,12 @@ namespace Plugin_AnalysisMaster.Services
         }
         /// <summary>
         /// 渲染动线主体部分。
-        /// 包含：
-        /// 1. 实线 (Solid) 渲染：基于贝塞尔宽度算法生成带粗细变化的多段线。
-        /// 2. 阵列 (Pattern) 渲染：基于两端留白居中算法，支持“组合模式”下的两个图块交替排布。
+        /// 修改逻辑：在调用 AddToDb 时传入原始 curve 路径，以便执行动画采样点的存储逻辑。
         /// </summary>
-        private static void RenderBody(BlockTableRecord btr, Transaction tr, Curve curve, AnalysisStyle style, ObjectIdCollection ids)
+        private static void RenderBody(BlockTableRecord btr, Transaction tr, Editor ed, Curve curve, AnalysisStyle style, ObjectIdCollection ids)
         {
             double len = curve.GetDistanceAtParameter(curve.EndParam);
 
-            // 分支 1：实线渲染
             if (style.PathType == PathCategory.Solid)
             {
                 double step = Math.Max(style.ArrowSize * 0.15, 0.5);
@@ -143,52 +330,173 @@ namespace Plugin_AnalysisMaster.Services
                             pl.SetEndWidthAt(i, endW);
                         }
                     }
-                    ids.Add(AddToDb(btr, tr, pl, style));
+                    // ✨ 修改：传入 curve 以便 AddToDb 记录采样点
+                    ids.Add(AddToDb(btr, tr, pl, style, curve));
                 }
             }
-            // 分支 2：阵列渲染 (包含组合交替逻辑)
             else if (style.PathType == PathCategory.Pattern)
             {
-                // 获取主图元 ID
                 ObjectId blockId1 = GetOrImportBlock(style.SelectedBlockName, btr.Database, tr);
-                // 获取组合图元 ID (未开启组合则使用主图元)
                 ObjectId blockId2 = style.IsComposite ? GetOrImportBlock(style.SelectedBlockName2, btr.Database, tr) : blockId1;
-
                 if (blockId1.IsNull) return;
 
                 double spacing = style.PatternSpacing;
                 if (spacing <= 0.001) spacing = 10.0;
 
-                // 1. 计算能容纳的单元总数
                 int count = (int)(len / spacing) + 1;
-                // 2. 计算居中对齐的起始余量
-                double occupiedLen = (count - 1) * spacing;
-                double margin = (len - occupiedLen) / 2.0;
+                double margin = (len - (count - 1) * spacing) / 2.0;
 
                 for (int i = 0; i < count; i++)
                 {
-                    double currentDist = margin + (i * spacing);
-                    if (currentDist < 0) currentDist = 0;
-                    if (currentDist > len) currentDist = len;
-
-                    // ✨ 核心逻辑：如果是组合模式，按索引奇偶性交替使用 blockId1 和 blockId2
+                    double currentDist = Math.Max(0, Math.Min(len, margin + (i * spacing)));
                     ObjectId currentBlockId = (i % 2 != 0 && style.IsComposite) ? blockId2 : blockId1;
-                    // 安全检查，防止副图元导入失败
                     if (currentBlockId.IsNull) currentBlockId = blockId1;
 
                     Point3d pt = curve.GetPointAtDist(currentDist);
-                    double param = curve.GetParameterAtDistance(currentDist);
-                    Vector3d tan = curve.GetFirstDerivative(param).GetNormal();
+                    Vector3d tan = curve.GetFirstDerivative(curve.GetParameterAtDistance(currentDist)).GetNormal();
 
                     using (BlockReference br = new BlockReference(pt, currentBlockId))
                     {
                         br.Rotation = Math.Atan2(tan.Y, tan.X);
                         br.ScaleFactors = new Scale3d(style.PatternScale);
-                        br.Color = Autodesk.AutoCAD.Colors.Color.FromRgb(
-                            style.MainColor.R, style.MainColor.G, style.MainColor.B);
-
-                        ids.Add(AddToDb(btr, tr, br, style));
+                        // ✨ 修改：传入 curve 以便 AddToDb 记录采样点
+                        ids.Add(AddToDb(btr, tr, br, style, curve));
                     }
+                }
+            }
+        }
+        /// <summary>
+        /// 动画回放主入口：采用纯命令行交互，解决 UI 弹出框干扰及光标卡顿感。
+        /// 修改逻辑：
+        /// 1. 纯净命令行提示：移除 PromptKeywordOptions 的 Message，转而使用 ed.WriteMessage 输出引导语，避免触发动态输入框（Dynamic Input）。
+        /// 2. 自由移动光标：在 GetKeywords 等待期间，允许用户自由移动鼠标将十字光标移开视口中心。
+        /// 3. 增强刷新：确认后立即进入隐藏和动画流程，确保视觉上的无缝衔接。
+        /// </summary>
+        public static void PlayPathAnimation()
+        {
+            Document doc = Application.DocumentManager.MdiActiveDocument;
+            if (doc == null) return;
+            Editor ed = doc.Editor;
+
+            ed.WriteMessage("\n[回放调试] 请在图中拾取分析线...");
+
+            // 1. 拾取带有动画数据的对象
+            PromptEntityOptions peo = new PromptEntityOptions("\n请选择需要回放动画的分析线: ");
+            peo.SetRejectMessage("\n所选对象不含动画路径数据。");
+            var res = ed.GetEntity(peo);
+            if (res.Status != PromptStatus.OK) return;
+
+            // ✨ 2. 纯命令行确认逻辑：不使用弹出式消息框
+            ed.WriteMessage("\n------------------------------------------------------------");
+            ed.WriteMessage("\n[确认回放] 请将鼠标移开视口中心，按下 [回车] 或 [空格] 开始播放...");
+            ed.WriteMessage("\n------------------------------------------------------------");
+
+            // 使用空消息的关键词选项，从而不在光标旁显示 UI 浮窗
+            PromptKeywordOptions pko = new PromptKeywordOptions("");
+            pko.AllowNone = true;              // 允许直接按回车/空格
+            pko.AppendKeywordsToMessage = false; // 不在命令行末尾追加关键词提示
+
+            var pkr = ed.GetKeywords(pko);
+            if (pkr.Status != PromptStatus.OK && pkr.Status != PromptStatus.None) return;
+
+            // 3. 进入锁定和回放流程
+            using (doc.LockDocument())
+            {
+                using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
+                {
+                    Entity pickedEnt = tr.GetObject(res.ObjectId, OpenMode.ForWrite) as Entity;
+                    if (pickedEnt == null || pickedEnt.ExtensionDictionary.IsNull) return;
+
+                    // 读取动画数据
+                    DBDictionary extDict = tr.GetObject(pickedEnt.ExtensionDictionary, OpenMode.ForRead) as DBDictionary;
+                    if (!extDict.Contains("ANALYSIS_ANIM_DATA"))
+                    {
+                        ed.WriteMessage("\n[错误] 未找到动画路径数据。");
+                        return;
+                    }
+
+                    Xrecord xRec = tr.GetObject(extDict.GetAt("ANALYSIS_ANIM_DATA"), OpenMode.ForRead) as Xrecord;
+                    using (ResultBuffer rb = xRec.Data)
+                    {
+                        if (rb == null) return;
+
+                        TypedValue[] dataArr = rb.AsArray();
+                        string fingerprint = dataArr[0].Value.ToString();
+                        Point3dCollection pts = new Point3dCollection();
+                        for (int i = 2; i < dataArr.Length; i++)
+                        {
+                            if (dataArr[i].TypeCode == (int)DxfCode.XCoordinate)
+                                pts.Add((Point3d)dataArr[i].Value);
+                        }
+
+                        if (pts.Count < 2) return;
+
+                        // 4. 识别并隐藏关联的所有实体
+                        List<Entity> entitiesToHide = new List<Entity>();
+                        entitiesToHide.Add(pickedEnt);
+
+                        ObjectIdCollection reactorIds = pickedEnt.GetPersistentReactorIds();
+                        if (reactorIds != null)
+                        {
+                            foreach (ObjectId id in reactorIds)
+                            {
+                                if (id.ObjectClass.IsDerivedFrom(RXClass.GetClass(typeof(Group))))
+                                {
+                                    Group gp = tr.GetObject(id, OpenMode.ForRead) as Group;
+                                    if (gp != null)
+                                    {
+                                        foreach (ObjectId memberId in gp.GetAllEntityIds())
+                                        {
+                                            Entity member = tr.GetObject(memberId, OpenMode.ForWrite) as Entity;
+                                            if (member != null && !entitiesToHide.Contains(member))
+                                                entitiesToHide.Add(member);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // 批量隐藏
+                        foreach (var ent in entitiesToHide) ent.Visible = false;
+                        tr.TransactionManager.QueueForGraphicsFlush();
+                        Autodesk.AutoCAD.Internal.Utils.FlushGraphics();
+                        ed.UpdateScreen();
+
+                        // 5. 执行增量瞬态生长动画
+                        using (Polyline animLine = new Polyline())
+                        {
+                            // 使用黄色高亮
+                            animLine.Color = Autodesk.AutoCAD.Colors.Color.FromColorIndex(Autodesk.AutoCAD.Colors.ColorMethod.ByAci, 2);
+                            animLine.Layer = pickedEnt.Layer;
+                            animLine.AddVertexAt(0, new Point2d(pts[0].X, pts[0].Y), 0, 0, 0);
+
+                            IntegerCollection vps = new IntegerCollection();
+                            Autodesk.AutoCAD.GraphicsInterface.TransientManager.CurrentTransientManager.AddTransient(
+                                animLine, Autodesk.AutoCAD.GraphicsInterface.TransientDrawingMode.DirectTopmost, 128, vps);
+
+                            try
+                            {
+                                for (int i = 1; i < pts.Count; i++)
+                                {
+                                    animLine.AddVertexAt(i, new Point2d(pts[i].X, pts[i].Y), 0, 0, 0);
+                                    Autodesk.AutoCAD.GraphicsInterface.TransientManager.CurrentTransientManager.UpdateTransient(animLine, vps);
+
+                                    Autodesk.AutoCAD.Internal.Utils.FlushGraphics();
+                                    Autodesk.AutoCAD.ApplicationServices.Application.UpdateScreen();
+
+                                    System.Threading.Thread.Sleep(20);
+                                }
+                            }
+                            finally
+                            {
+                                // 6. 清理并恢复显示
+                                Autodesk.AutoCAD.GraphicsInterface.TransientManager.CurrentTransientManager.EraseTransient(animLine, vps);
+                                foreach (var ent in entitiesToHide) ent.Visible = true;
+                                ed.UpdateScreen();
+                            }
+                        }
+                    }
+                    tr.Commit();
                 }
             }
         }
@@ -306,11 +614,15 @@ namespace Plugin_AnalysisMaster.Services
         }
 
         /// <summary>
-        /// 修改后的 AddToDb：将路径单元、颜色、以及起终点箭头全部纳入指纹识别
+        /// 实体入库并附加样式指纹及动画采样点。
+        /// 修改逻辑：增加了调试信息输出。
+        /// 在保存动画数据时，会向命令行发送记录的采样点数量，方便确认数据是否已成功持久化。
         /// </summary>
-        private static ObjectId AddToDb(BlockTableRecord btr, Transaction tr, Entity ent, AnalysisStyle style)
+        private static ObjectId AddToDb(BlockTableRecord btr, Transaction tr, Entity ent, AnalysisStyle style, Curve rawPath = null)
         {
-            // 确保注册了 AppName
+            Editor ed = Application.DocumentManager.MdiActiveDocument.Editor;
+
+            // 1. 基础属性设置
             Database db = btr.Database;
             RegAppTable rat = (RegAppTable)tr.GetObject(db.RegAppTableId, OpenMode.ForRead);
             if (!rat.Has(RegAppName))
@@ -322,32 +634,65 @@ namespace Plugin_AnalysisMaster.Services
             }
 
             ent.Layer = style.TargetLayer;
-            // 确保设置了颜色
-            ent.Color = Color.FromRgb(style.MainColor.R, style.MainColor.G, style.MainColor.B);
+            ent.Color = Autodesk.AutoCAD.Colors.Color.FromRgb(style.MainColor.R, style.MainColor.G, style.MainColor.B);
 
-            // ✨ 重新梳理样式指纹逻辑：增加起终点箭头判断
-            // 格式：路径模式|主块名|副块名|组合模式|颜色|起点箭头|终点箭头
+            // 2. 写入样式指纹 (XData)
             string styleFingerprint = string.Format("{0}|{1}|{2}|{3}|{4}|{5}|{6}",
-                style.PathType,
-                style.SelectedBlockName,
-                style.SelectedBlockName2,
-                style.IsComposite,
-                style.MainColor.ToString(),
-                style.StartArrowType,
-                style.EndArrowType);
+                style.PathType, style.SelectedBlockName, style.SelectedBlockName2, style.IsComposite,
+                style.MainColor.ToString(), style.StartArrowType, style.EndArrowType);
 
-            ResultBuffer rb = new ResultBuffer(
+            ResultBuffer rbXData = new ResultBuffer(
                 new TypedValue((int)DxfCode.ExtendedDataRegAppName, RegAppName),
                 new TypedValue((int)DxfCode.ExtendedDataAsciiString, styleFingerprint)
             );
-            ent.XData = rb;
+            ent.XData = rbXData;
 
+            // 3. 先将实体添加到数据库
             ObjectId id = btr.AppendEntity(ent);
             tr.AddNewlyCreatedDBObject(ent, true);
+
+            // 4. 实体入库后，存储动画路径数据
+            if (style.IsAnimated && rawPath != null)
+            {
+                ent.CreateExtensionDictionary();
+                DBDictionary dict = tr.GetObject(ent.ExtensionDictionary, OpenMode.ForWrite) as DBDictionary;
+
+                using (Xrecord xRec = new Xrecord())
+                {
+                    using (ResultBuffer rbAnim = new ResultBuffer())
+                    {
+                        rbAnim.Add(new TypedValue((int)DxfCode.Text, styleFingerprint));
+                        rbAnim.Add(new TypedValue((int)DxfCode.Real, style.SamplingInterval));
+
+                        int ptCount = 0;
+                        double totalLen = rawPath.GetDistanceAtParameter(rawPath.EndParam);
+                        for (double d = 0; d <= totalLen; d += style.SamplingInterval)
+                        {
+                            rbAnim.Add(new TypedValue((int)DxfCode.XCoordinate, rawPath.GetPointAtDist(d)));
+                            ptCount++;
+                        }
+                        rbAnim.Add(new TypedValue((int)DxfCode.XCoordinate, rawPath.EndPoint));
+                        ptCount++;
+
+                        xRec.Data = rbAnim;
+                        dict.SetAt("ANALYSIS_ANIM_DATA", xRec);
+                        tr.AddNewlyCreatedDBObject(xRec, true);
+
+                        // ✨ 调试日志：确认保存成功
+                        ed.WriteMessage($"\n[动画调试] 成功保存动画数据：采样点数 = {ptCount}, 采样间距 = {style.SamplingInterval}");
+                    }
+                }
+            }
+            else if (style.IsAnimated && rawPath == null)
+            {
+                ed.WriteMessage("\n[动画调试] 警告：开启动画记录但路径原始曲线(rawPath)为空。");
+            }
+
             return id;
         }
         /// <summary>
-        /// 修改后的图例生成逻辑：考虑了箭头的种类和个数
+        /// 图例生成逻辑。
+        /// 修改逻辑：由于 RenderPath 签名变更，需要在此处传递当前文档的 Editor 对象。
         /// </summary>
         public static void GenerateLegend(Document doc, string targetLayer)
         {
@@ -356,9 +701,9 @@ namespace Plugin_AnalysisMaster.Services
 
             // 1. 框选图元
             SelectionFilter filter = new SelectionFilter(new TypedValue[] {
-        new TypedValue(0, "LWPOLYLINE,POLYLINE,SPLINE,INSERT"),
-        new TypedValue(8, targetLayer)
-    });
+                new TypedValue(0, "LWPOLYLINE,POLYLINE,SPLINE,INSERT"),
+                new TypedValue(8, targetLayer)
+            });
 
             PromptSelectionResult selRes = ed.GetSelection(filter);
             if (selRes.Status != PromptStatus.OK) return;
@@ -380,7 +725,6 @@ namespace Plugin_AnalysisMaster.Services
                     string fingerprint = styleValue.Value.ToString();
                     if (!uniqueStyles.ContainsKey(fingerprint))
                     {
-                        // 解析新版指纹（包含 7 个部分）
                         string[] parts = fingerprint.Split('|');
                         if (parts.Length < 7) continue;
 
@@ -390,17 +734,15 @@ namespace Plugin_AnalysisMaster.Services
                         style.SelectedBlockName2 = parts[2];
                         style.IsComposite = bool.Parse(parts[3]);
 
-                        // 还原颜色
                         var colorStr = parts[4];
                         style.MainColor = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(colorStr);
 
-                        // ✨ 还原箭头设置
                         style.StartArrowType = parts[5];
                         style.EndArrowType = parts[6];
 
-                        // 默认一些图例显示的比例
                         style.ArrowSize = 1.0;
                         style.PatternScale = 1.0;
+                        style.IsAnimated = false; // 图例生成不需要动画
 
                         uniqueStyles.Add(fingerprint, style);
                     }
@@ -416,7 +758,7 @@ namespace Plugin_AnalysisMaster.Services
                 BlockTableRecord btr = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
 
                 // 4. 绘制图例（一列排放）
-                double rowHeight = 30.0; // 调高了行高，防止大箭头重叠
+                double rowHeight = 30.0;
                 double lineLength = 60.0;
                 int index = 0;
 
@@ -427,8 +769,8 @@ namespace Plugin_AnalysisMaster.Services
 
                     using (Line samplePath = new Line(start, end))
                     {
-                        // ✨ 自动根据还原的 style 绘制主体和对应的箭头
-                        RenderPath(btr, tr, samplePath, style, new ObjectIdCollection());
+                        // ✨ 修改：增加 ed 参数传递
+                        RenderPath(btr, tr, ed, samplePath, style, new ObjectIdCollection());
                     }
                     index++;
                 }
@@ -522,5 +864,6 @@ namespace Plugin_AnalysisMaster.Services
                 }
             }
         }
+
     }
 }

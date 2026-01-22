@@ -9,8 +9,7 @@ namespace Plugin_AnalysisMaster.Models
 
     /// <summary>
     /// 存储动线所有样式参数的数据模型。
-    /// 修改内容：增加了 IsComposite 开关用于判断是否开启交替阵列，
-    /// 以及 SelectedBlockName2 用于存储第二个图元的块名。
+    /// 修改内容：新增了 SamplingInterval 属性，用于控制动画路径点的记录密度。
     /// </summary>
     public class AnalysisStyle
     {
@@ -33,12 +32,18 @@ namespace Plugin_AnalysisMaster.Models
         public PathCategory PathType { get; set; } = PathCategory.Solid;
         public string SelectedBlockName { get; set; } = "";
 
-        // ✨ 新增：组合模式支持
+        // 组合模式支持
         public bool IsComposite { get; set; } = false;
         public string SelectedBlockName2 { get; set; } = "";
 
         public double PatternSpacing { get; set; } = 2.0;
         public double PatternScale { get; set; } = 1.0;
 
+        // 动画控制
+        public bool IsAnimated { get; set; } = false;
+        public int AnimationDelay { get; set; } = 10;
+
+        // ✨ 新增：采样间距（用于存储和回放）
+        public double SamplingInterval { get; set; } = 5.0;
     }
 }

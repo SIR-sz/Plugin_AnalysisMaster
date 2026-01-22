@@ -1,0 +1,58 @@
+﻿<Window x:Class="Plugin_AnalysisMaster.UI.AnimationWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="分析动画管理器" Height="500" Width="350" Topmost="True" WindowStartupLocation="CenterOwner">
+    <Grid Margin="10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Orientation="Horizontal" Grid.Row="0" Margin="0,0,0,10">
+            <Button Content="➕ 添加路径" Click="AddPath_Click" Width="80" Margin="0,0,5,0"/>
+            <Button Content="➖ 移除" Click="RemovePath_Click" Width="60" Margin="0,0,5,0"/>
+            <Button Content="🧹 清空" Click="ClearPaths_Click" Width="60"/>
+        </StackPanel>
+
+        <ListView x:Name="PathListView" Grid.Row="1" SelectionChanged="PathListView_SelectionChanged">
+            <ListView.View>
+                <GridView>
+                    <GridViewColumn Header="顺序" DisplayMemberBinding="{Binding RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type ListViewItem}}, Converter={StaticResource IndexConverter}}" Width="40"/>
+                    <GridViewColumn Header="组号" Width="50">
+                        <GridViewColumn.CellTemplate>
+                            <DataTemplate>
+                                <TextBox Text="{Binding GroupNumber, UpdateSourceTrigger=PropertyChanged}" Width="35"/>
+                            </DataTemplate>
+                        </GridViewColumn.CellTemplate>
+                    </GridViewColumn>
+                    <GridViewColumn Header="预览" Width="40">
+                        <GridViewColumn.CellTemplate>
+                            <DataTemplate>
+                                <Rectangle Width="15" Height="15" Fill="{Binding PathColor, Converter={StaticResource ColorToBrushConverter}}"/>
+                            </DataTemplate>
+                        </GridViewColumn.CellTemplate>
+                    </GridViewColumn>
+                    <GridViewColumn Header="路径信息" DisplayMemberBinding="{Binding Name}" Width="150"/>
+                </GridView>
+            </ListView.View>
+        </ListView>
+
+        <StackPanel Grid.Row="2" Margin="0,10">
+            <DockPanel Margin="0,5">
+                <TextBlock Text="演示加粗: " VerticalAlignment="Center"/>
+                <Slider x:Name="ThicknessSlider" Minimum="0" Maximum="20" Value="2" TickFrequency="1" IsSnapToTickEnabled="True"/>
+            </DockPanel>
+            <DockPanel>
+                <CheckBox x:Name="LoopCheck" Content="循环播放" VerticalAlignment="Center"/>
+                <CheckBox x:Name="PersistenceCheck" Content="播放后保留迹线" IsChecked="True" Margin="20,0,0,0"/>
+            </DockPanel>
+        </StackPanel>
+
+        <UniformGrid Grid.Row="3" Columns="2" Margin="0,5">
+            <Button x:Name="BtnPlay" Content="▶ 开始播放" Height="40" Margin="0,0,5,0" Click="BtnPlay_Click"/>
+            <Button x:Name="BtnStop" Content="■ 停止" Height="40" Click="BtnStop_Click"/>
+        </UniformGrid>
+    </Grid>
+</Window>

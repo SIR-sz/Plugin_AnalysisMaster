@@ -296,6 +296,32 @@
                             </Button>
                         </StackPanel>
                     </GroupBox>
+
+                    <GroupBox Header="动画设置">
+                        <StackPanel>
+                            <CheckBox x:Name="IsAnimatedCheckBox" Content="绘制时自动记录动画" Foreground="#2196F3" Margin="0,5" Click="OnParamChanged"/>
+
+                            <TextBlock Text="生长延迟 (ms)" FontSize="11" Margin="0,5,0,0"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="60"/>
+                                </Grid.ColumnDefinitions>
+                                <Slider x:Name="AnimationDelaySlider" Minimum="1" Maximum="200" Value="10" ValueChanged="OnParamChanged"/>
+                                <TextBox Grid.Column="1" Text="{Binding ElementName=AnimationDelaySlider, Path=Value, UpdateSourceTrigger=PropertyChanged, StringFormat={}{0:F0}}" Style="{StaticResource ValueInputStyle}"/>
+                            </Grid>
+
+                            <TextBlock Text="采样间距 (保存密度)" FontSize="11" Margin="0,5,0,0"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="60"/>
+                                </Grid.ColumnDefinitions>
+                                <Slider x:Name="SamplingIntervalSlider" Minimum="0.5" Maximum="100" Value="5.0" ValueChanged="OnParamChanged"/>
+                                <TextBox Grid.Column="1" Text="{Binding ElementName=SamplingIntervalSlider, Path=Value, UpdateSourceTrigger=PropertyChanged, StringFormat={}{0:F1}}" Style="{StaticResource ValueInputStyle}"/>
+                            </Grid>
+                        </StackPanel>
+                    </GroupBox>
                 </StackPanel>
             </ScrollViewer>
 
@@ -303,11 +329,12 @@
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
 
                 <Button Content="开始绘制" 
                         Click="StartDraw_Click" 
-                        Height="35" Margin="0,0,5,0"
+                        Height="35" Margin="0,0,2,0"
                         Background="#2196F3" Foreground="White" FontWeight="Bold">
                     <Button.Template>
                         <ControlTemplate TargetType="Button">
@@ -319,9 +346,23 @@
                 </Button>
 
                 <Button Grid.Column="1" 
+                        Content="回放动画" 
+                        Click="PlayAnimation_Click" 
+                        Height="35" Margin="2,0,2,0"
+                        Background="#FF9800" Foreground="White" FontWeight="Bold">
+                    <Button.Template>
+                        <ControlTemplate TargetType="Button">
+                            <Border Background="{TemplateBinding Background}" CornerRadius="4">
+                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                        </ControlTemplate>
+                    </Button.Template>
+                </Button>
+
+                <Button Grid.Column="2" 
                         Content="生成图例" 
                         Click="GenerateLegend_Click" 
-                        Height="35" Margin="5,0,0,0"
+                        Height="35" Margin="2,0,0,0"
                         Background="#4CAF50" Foreground="White" FontWeight="Bold">
                     <Button.Template>
                         <ControlTemplate TargetType="Button">
