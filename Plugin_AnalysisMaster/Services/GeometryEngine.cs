@@ -23,30 +23,39 @@ namespace Plugin_AnalysisMaster.Services
 
         private const string RegAppName = "ANALYSIS_MASTER_STYLE";
         // 存放每条路径预读取的数据，避免循环中操作数据库
+        // 文件：GeometryEngine.cs -> PathPlaybackData 类
+        // 位置：GeometryEngine.cs 约第 26 行
+        // 存放每条路径预读取的数据
+        // 存放每条路径预读取的数据
         private class PathPlaybackData
         {
             public List<Point3d> Points { get; set; }
             public Autodesk.AutoCAD.Colors.Color Color { get; set; }
             public string Layer { get; set; }
             public ObjectId OriginalId { get; set; }
+
+            // ✨ 新增：存储该路径所属组的所有成员 ID 及其对应位置
+            public List<KeyValuePair<ObjectId, Point3d>> SortedMembers { get; set; } = new List<KeyValuePair<ObjectId, Point3d>>();
+            // ✨ 新增：记录当前动画已显示到的成员索引
+            public int LastShownMemberIndex { get; set; } = 0;
         }
 
         /// <summary>
         /// 异步播放序列逻辑
         /// </summary>
+        // 位置：GeometryEngine.cs 约第 40 行
         public static async Task PlaySequenceAsync(
-             List<AnimPathItem> items,
-             double thickness,
-             int speedMultiplier, // 接收倍速
-             bool isLoop,
-             bool isPersistent,
-             CancellationToken token)
+              List<AnimPathItem> items,
+              double thickness,
+              int speedMultiplier,
+              bool isLoop,
+              bool isPersistent,
+              CancellationToken token)
         {
             Document doc = Application.DocumentManager.MdiActiveDocument;
             if (doc == null) return;
             Editor ed = doc.Editor;
 
-            // 1. 预读取
             List<PathPlaybackData> allData = new List<PathPlaybackData>();
             using (doc.LockDocument())
             using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
@@ -67,8 +76,9 @@ namespace Plugin_AnalysisMaster.Services
             {
                 do
                 {
-                    // A. 隐藏原始线（包含组支持）
+                    // A. 隐藏所有原始线（包括阵列中的所有单元）
                     ToggleEntitiesVisibility(items.Select(i => i.Id), false);
+                    allData.ForEach(d => d.LastShownMemberIndex = 0); // 重置索引
 
                     var groupedData = items
                         .Select(x => new { item = x, data = allData.FirstOrDefault(d => d.OriginalId == x.Id) })
@@ -84,7 +94,6 @@ namespace Plugin_AnalysisMaster.Services
                         var groupPaths = group.ToList();
                         int[] lastAddedIndices = new int[groupPaths.Count];
 
-                        // B. 初始化起点
                         foreach (var path in groupPaths)
                         {
                             Polyline pl = new Polyline { Plinegen = true };
@@ -97,9 +106,7 @@ namespace Plugin_AnalysisMaster.Services
                             activeTransients.Add(pl);
                         }
 
-                        // C. 增强版倍速生长循环
                         int maxPts = groupPaths.Max(p => p.data.Points.Count);
-                        // 通过 speedMultiplier 跳点，大幅提升视觉速度
                         for (int currentStep = speedMultiplier; ; currentStep += speedMultiplier)
                         {
                             if (token.IsCancellationRequested) return;
@@ -111,23 +118,43 @@ namespace Plugin_AnalysisMaster.Services
                                 var pl = currentGroupLines[i];
                                 if (lastAddedIndices[i] >= data.Points.Count - 1) continue;
 
-                                // 计算下一个点位（确保不越界）
                                 int nextPtIdx = Math.Min(currentStep, data.Points.Count - 1);
                                 if (nextPtIdx > lastAddedIndices[i])
                                 {
+                                    // 1. 更新黄色临时线生长
                                     int vtxIdx = pl.NumberOfVertices;
                                     pl.AddVertexAt(vtxIdx, new Point2d(data.Points[nextPtIdx].X, data.Points[nextPtIdx].Y), 0, 0, 0);
-                                    pl.SetStartWidthAt(vtxIdx - 1, thickness);
-                                    pl.SetEndWidthAt(vtxIdx - 1, thickness);
-
                                     lastAddedIndices[i] = nextPtIdx;
                                     TransientManager.CurrentTransientManager.UpdateTransient(pl, vps);
+
+                                    // 2. ✨ 核心同步逻辑：根据当前生长距离显示阵列单元
+                                    if (data.SortedMembers.Count > data.LastShownMemberIndex)
+                                    {
+                                        Point3d currentAnimPt = data.Points[nextPtIdx];
+                                        double currentGrowthDist = currentAnimPt.DistanceTo(data.Points[0]);
+
+                                        using (Transaction trSync = doc.Database.TransactionManager.StartTransaction())
+                                        {
+                                            // 只要单元离起点的距离 <= 当前黄色线长的距离，就显示它
+                                            while (data.LastShownMemberIndex < data.SortedMembers.Count)
+                                            {
+                                                var member = data.SortedMembers[data.LastShownMemberIndex];
+                                                if (member.Value.DistanceTo(data.Points[0]) <= currentGrowthDist + 0.1) // 增加 0.1 容差
+                                                {
+                                                    Entity mEnt = trSync.GetObject(member.Key, OpenMode.ForWrite) as Entity;
+                                                    if (mEnt != null) mEnt.Visible = true;
+                                                    data.LastShownMemberIndex++;
+                                                }
+                                                else break;
+                                            }
+                                            trSync.Commit();
+                                        }
+                                    }
                                 }
                                 if (lastAddedIndices[i] < data.Points.Count - 1) allFinished = false;
                             }
 
                             Autodesk.AutoCAD.Internal.Utils.FlushGraphics();
-                            // 保持固定的小延迟（10ms），主要通过跳点来提速
                             await Task.Delay(10, token);
                             if (allFinished) break;
                         }
@@ -141,13 +168,14 @@ namespace Plugin_AnalysisMaster.Services
             finally
             {
                 ClearTransients(activeTransients, vps);
-                // ✨ 修正：只有勾选“保留迹线”才恢复原始线
-                if (isPersistent) ToggleEntitiesVisibility(items.Select(i => i.Id), true);
+                // 确保动画结束后所有物体（包括阵列成员）恢复可见
+                ToggleEntitiesVisibility(items.Select(i => i.Id), true);
                 ed.UpdateScreen();
             }
         }
 
         // 辅助方法：读取实体数据
+        // 位置：GeometryEngine.cs 约第 105 行
         private static PathPlaybackData FetchPathData(Transaction tr, ObjectId id)
         {
             Entity ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
@@ -160,7 +188,6 @@ namespace Plugin_AnalysisMaster.Services
             using (ResultBuffer rb = xRec.Data)
             {
                 TypedValue[] dataArr = rb.AsArray();
-                // 解析指纹获取颜色
                 string fingerprint = dataArr[0].Value.ToString();
                 string[] parts = fingerprint.Split('|');
                 var colorStr = parts[4];
@@ -173,13 +200,45 @@ namespace Plugin_AnalysisMaster.Services
                         pts.Add((Point3d)dataArr[i].Value);
                 }
 
-                return new PathPlaybackData
+                var playbackData = new PathPlaybackData
                 {
                     Points = pts,
                     Color = Autodesk.AutoCAD.Colors.Color.FromRgb(mediaColor.R, mediaColor.G, mediaColor.B),
                     Layer = ent.Layer,
                     OriginalId = id
                 };
+
+                // ✨ 核心修复：获取编组内所有成员并排序
+                ObjectIdCollection reactors = ent.GetPersistentReactorIds();
+                if (reactors != null)
+                {
+                    foreach (ObjectId rId in reactors)
+                    {
+                        if (rId.IsValid && !rId.IsErased && rId.ObjectClass.IsDerivedFrom(RXClass.GetClass(typeof(Group))))
+                        {
+                            Group gp = tr.GetObject(rId, OpenMode.ForRead) as Group;
+                            if (gp != null)
+                            {
+                                foreach (ObjectId mId in gp.GetAllEntityIds())
+                                {
+                                    Entity member = tr.GetObject(mId, OpenMode.ForRead) as Entity;
+                                    if (member != null)
+                                    {
+                                        // 记录成员位置（图块取 Position，线条取起点）
+                                        Point3d pos = (member is BlockReference br) ? br.Position : (member is Curve cv ? cv.StartPoint : pts[0]);
+                                        playbackData.SortedMembers.Add(new KeyValuePair<ObjectId, Point3d>(mId, pos));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // ✨ 关键点：按距离起点的顺序排序，否则生长会乱序跳动
+                playbackData.SortedMembers = playbackData.SortedMembers
+                    .OrderBy(m => m.Value.DistanceTo(pts[0]))
+                    .ToList();
+
+                return playbackData;
             }
         }
 
@@ -293,10 +352,26 @@ namespace Plugin_AnalysisMaster.Services
                     Curve path = CreatePathCurve(points, style.IsCurved);
                     using (path)
                     {
-                        // ✨ 修改：增加 ed 参数传递
+                        // 1. 渲染几何体（此时内部不采样，很快）
                         RenderPath(btr, tr, ed, path, style, allIds);
+
+                        // 2. ✨ 核心修复：执行一次“骨架线采样”，并挂在第一个实体上
+                        if (style.IsAnimated && allIds.Count > 0)
+                        {
+                            // 获取骨架线的采样点
+                            List<Point3d> skeletonPoints = SampleCurve(path, style.SamplingInterval);
+
+                            // 开启写模式打开第一个实体
+                            Entity headEnt = tr.GetObject(allIds[0], OpenMode.ForWrite) as Entity;
+                            if (headEnt != null)
+                            {
+                                // 写入指纹（包含 Guid 和采样点）
+                                WriteFingerprint(tr, headEnt, style, skeletonPoints);
+                            }
+                        }
                     }
 
+                    // 3. 打组（保持不变）
                     if (allIds.Count > 1)
                     {
                         DBDictionary gd = (DBDictionary)tr.GetObject(db.GroupDictionaryId, OpenMode.ForWrite);
@@ -857,9 +932,7 @@ namespace Plugin_AnalysisMaster.Services
 
                 foreach (Point3d pt in sampledPoints)
                 {
-                    rb.Add(new TypedValue((int)DxfCode.Real, pt.X));
-                    rb.Add(new TypedValue((int)DxfCode.Real, pt.Y));
-                    rb.Add(new TypedValue((int)DxfCode.Real, pt.Z));
+                    rb.Add(new TypedValue((int)DxfCode.XCoordinate, pt));
                 }
                 xRec.Data = rb;
                 dict.SetAt("ANALYSIS_ANIM_DATA", xRec);
