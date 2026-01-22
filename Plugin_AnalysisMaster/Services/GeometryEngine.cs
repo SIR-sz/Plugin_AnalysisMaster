@@ -366,7 +366,7 @@ namespace Plugin_AnalysisMaster.Services
                         }
                     }
                     // ✨ 修改：传入 curve 以便 AddToDb 记录采样点
-                    ids.Add(AddToDb(btr, tr, pl, style, curve));
+                    ids.Add(AddToDb(btr, tr, pl, style, null));
                 }
             }
             else if (style.PathType == PathCategory.Pattern)
@@ -394,8 +394,8 @@ namespace Plugin_AnalysisMaster.Services
                     {
                         br.Rotation = Math.Atan2(tan.Y, tan.X);
                         br.ScaleFactors = new Scale3d(style.PatternScale);
-                        // ✨ 修改：传入 curve 以便 AddToDb 记录采样点
-                        ids.Add(AddToDb(btr, tr, br, style, curve));
+                        // ✨ 核心修复：此处传 null。不再为每个图块重复采样。
+                        ids.Add(AddToDb(btr, tr, br, style, null));
                     }
                 }
             }
@@ -589,6 +589,9 @@ namespace Plugin_AnalysisMaster.Services
                 br.Color = Autodesk.AutoCAD.Colors.Color.FromRgb(
                     style.MainColor.R, style.MainColor.G, style.MainColor.B);
 
+                // ✨ 新增：设置图层，确保端头和线条在同一个图层
+                br.Layer = style.TargetLayer;
+
                 ObjectId id = btr.AppendEntity(br);
                 tr.AddNewlyCreatedDBObject(br, true);
                 idCol.Add(id);
@@ -651,6 +654,8 @@ namespace Plugin_AnalysisMaster.Services
         /// <summary>
         /// 核心方法：根据绘制点位和样式，生成实体并存入数据库
         // --- 修改后的 FinalizeAndSave ---
+        // 文件：GeometryEngine.cs -> FinalizeAndSave 方法
+
         public static void FinalizeAndSave(List<Point3d> points, AnalysisStyle style, List<Point3d> sampledPoints)
         {
             if (points == null || points.Count < 2) return;
@@ -659,51 +664,46 @@ namespace Plugin_AnalysisMaster.Services
             Database db = doc.Database;
 
             using (DocumentLock loc = doc.LockDocument())
+            using (Transaction tr = db.TransactionManager.StartTransaction())
             {
-                using (Transaction tr = db.TransactionManager.StartTransaction())
+                BlockTableRecord modelSpace = (BlockTableRecord)tr.GetObject(
+                    SymbolUtilityServices.GetBlockModelSpaceId(db), OpenMode.ForWrite);
+
+                Point3dCollection ptsCol = new Point3dCollection(points.ToArray());
+                Curve pathCurve = CreatePathCurve(ptsCol, style.IsCurved);
+
+                using (pathCurve)
                 {
-                    BlockTableRecord modelSpace = (BlockTableRecord)tr.GetObject(
-                        SymbolUtilityServices.GetBlockModelSpaceId(db), OpenMode.ForWrite);
+                    ObjectIdCollection ids = new ObjectIdCollection();
 
-                    // 创建路径曲线参考
-                    Point3dCollection ptsCol = new Point3dCollection(points.ToArray());
-                    Curve pathCurve = CreatePathCurve(ptsCol, style.IsCurved);
+                    // 1. 渲染所有几何（此时 AddToDb 仅负责画线，不写动画数据）
+                    if (style.PathType == PathCategory.Solid)
+                        RenderBody(modelSpace, tr, doc.Editor, pathCurve, style, ids);
+                    else
+                        RenderPath(modelSpace, tr, doc.Editor, pathCurve, style, ids);
 
-                    using (pathCurve)
+                    // 2. ✨ 核心逻辑：只在第一个实体写入动画指纹
+                    // 这样做确保了：Picking 时只添加一个条目到列表，且数据来源于骨架线采样
+                    if (ids.Count > 0 && style.IsAnimated && sampledPoints != null)
                     {
-                        // ✨ 必须创建一个 ID 集合传进去，供 RenderBody/RenderPath 填充
-                        ObjectIdCollection ids = new ObjectIdCollection();
-
-                        if (style.PathType == PathCategory.Solid)
+                        Entity headEnt = tr.GetObject(ids[0], OpenMode.ForWrite) as Entity;
+                        if (headEnt != null)
                         {
-                            // ✨ 修复：RenderBody 返回 void，不要赋值给 pl
-                            RenderBody(modelSpace, tr, doc.Editor, pathCurve, style, ids);
-                        }
-                        else
-                        {
-                            // ✨ 修复：调用 RenderPath 处理阵列模式
-                            RenderPath(modelSpace, tr, doc.Editor, pathCurve, style, ids);
-                        }
-
-                        // 如果生成的物体带动画采样（针对 FinalizeAndSave 这种直接保存的情况）
-                        if (ids.Count > 0 && style.IsAnimated && sampledPoints != null)
-                        {
-                            Entity firstEnt = tr.GetObject(ids[0], OpenMode.ForWrite) as Entity;
-                            if (firstEnt != null) WriteFingerprint(tr, firstEnt, style, sampledPoints);
-                        }
-
-                        // 如果有多个实体（阵列），执行自动打组，解决阵列卡顿
-                        if (ids.Count > 1)
-                        {
-                            Group gp = new Group("AnalysisGroup", true);
-                            DBDictionary groupDict = (DBDictionary)tr.GetObject(db.GroupDictionaryId, OpenMode.ForWrite);
-                            groupDict.SetAt("*", gp);
-                            tr.AddNewlyCreatedDBObject(gp, true);
-                            gp.Append(ids);
+                            WriteFingerprint(tr, headEnt, style, sampledPoints);
                         }
                     }
-                    tr.Commit();
+
+                    // 3. 自动打组（保持 CAD 操作的整体性）
+                    if (ids.Count > 1)
+                    {
+                        Group gp = new Group("AnalysisGroup", true);
+                        DBDictionary groupDict = (DBDictionary)tr.GetObject(db.GroupDictionaryId, OpenMode.ForWrite);
+                        groupDict.SetAt("*", gp);
+                        tr.AddNewlyCreatedDBObject(gp, true);
+                        gp.Append(ids);
+                    }
                 }
+                tr.Commit();
             }
         }
         // --- 3. 新版列表写入方法 (用于 FinalizeAndSave 内部调用) ---
@@ -775,69 +775,67 @@ namespace Plugin_AnalysisMaster.Services
             }
         }
 
-        // --- 2. 给单条实体用的（旧代码兼容重载） ---
-        // 如果旧代码报错说缺少参数，请根据报错提示补全参数，比如加入 BlockTableRecord 或 Transaction
-        public static void AddToDb(BlockTableRecord btr, Transaction tr, Entity ent, AnalysisStyle style)
-        {
-            if (ent == null) return;
 
-            // 如果实体还没加入数据库，则加入
-            if (ent.ObjectId.IsNull)
-            {
-                btr.AppendEntity(ent);
-                tr.AddNewlyCreatedDBObject(ent, true);
-            }
-
-            // 写入指纹（这里 sampledPoints 传空，因为旧调用通常没有采样点）
-            WriteFingerprint(tr, ent, style, null);
-        }
         // --- 修复：支持单体保存并返回 ObjectId 的重载 ---
         // 解决错误：CS1503 (void 无法转换为 ObjectId) 和 CS1501 (没有 5 个参数的重载)
         // --- 重载 2：给单条实体用的（旧代码兼容重载） ---
         // 解决 CS1503 (void 无法转换为 ObjectId) 和 CS1501 (参数不匹配)
         // --- 修改后的 AddToDb (单体版本) ---
         // --- 请确保这里的返回类型是 ObjectId 而不是 void ---
+        // 文件：GeometryEngine.cs
+
         public static ObjectId AddToDb(BlockTableRecord btr, Transaction tr, Entity ent, AnalysisStyle style, Curve rawPath = null)
         {
             if (ent == null) return ObjectId.Null;
 
-            // 1. 如果实体还没加入数据库，则加入
+            // ✨ 修复 1：统一设置颜色和图层
+            ent.Color = Autodesk.AutoCAD.Colors.Color.FromRgb(style.MainColor.R, style.MainColor.G, style.MainColor.B);
+            ent.Layer = style.TargetLayer;
+
             if (ent.ObjectId.IsNull)
             {
                 btr.AppendEntity(ent);
                 tr.AddNewlyCreatedDBObject(ent, true);
             }
 
-            // 2. 动画采样逻辑：如果开启了动画且传入了原始路径，则生成采样点
+            // ✨ 优化：如果此处传入了 rawPath（兼容老逻辑），则执行采样
+            // 但在新的 FinalizeAndSave 逻辑中，我们会传 null，从而跳过这里的采样，提升速度
             List<Point3d> sampledPoints = null;
             if (style.IsAnimated && rawPath != null)
             {
-                sampledPoints = new List<Point3d>();
-                try
-                {
-                    double len = rawPath.GetDistanceAtParameter(rawPath.EndParam);
-                    // 使用样式中的采样间距，默认 5.0
-                    double step = style.SamplingInterval > 0 ? style.SamplingInterval : 5.0;
-                    int count = (int)Math.Max(len / step, 10);
-                    for (int i = 0; i <= count; i++)
-                    {
-                        double dist = Math.Min(len, i * step);
-                        sampledPoints.Add(rawPath.GetPointAtDist(dist));
-                    }
-                }
-                catch { /* 忽略几何异常 */ }
+                sampledPoints = SampleCurve(rawPath, style.SamplingInterval);
             }
 
-            // 3. 写入唯一指纹（内部已包含 Guid）
-            WriteFingerprint(tr, ent, style, sampledPoints);
+            // 如果有采样点，则写入指纹（单线模式）
+            if (sampledPoints != null)
+            {
+                WriteFingerprint(tr, ent, style, sampledPoints);
+            }
 
-            // ✨ 关键：必须返回 ObjectId，否则 606, 369, 398 行会报错
             return ent.ObjectId;
+        }
+
+        // 辅助采样方法
+        private static List<Point3d> SampleCurve(Curve curve, double interval)
+        {
+            List<Point3d> points = new List<Point3d>();
+            try
+            {
+                double len = curve.GetDistanceAtParameter(curve.EndParam);
+                double step = interval > 0 ? interval : 20.0;
+                int count = (int)Math.Max(len / step, 10);
+                for (int i = 0; i <= count; i++)
+                {
+                    points.Add(curve.GetPointAtDist(Math.Min(len, i * step)));
+                }
+            }
+            catch { }
+            return points;
         }
         // --- 3. 抽离出的指纹写入逻辑（私有辅助） ---
         private static void WriteFingerprint(Transaction tr, Entity ent, AnalysisStyle style, List<Point3d> sampledPoints)
         {
-            // 如果未开开启记录，或没有采样点，则跳过
+            // 如果没有采样点，则不写入动画数据
             if (!style.IsAnimated || sampledPoints == null || sampledPoints.Count == 0) return;
 
             if (ent.ExtensionDictionary.IsNull)

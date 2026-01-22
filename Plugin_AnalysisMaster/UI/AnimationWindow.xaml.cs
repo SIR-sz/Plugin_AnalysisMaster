@@ -50,40 +50,30 @@ namespace Plugin_AnalysisMaster.UI
             Editor ed = doc.Editor;
 
             this.Visibility = System.Windows.Visibility.Collapsed;
-
             try
             {
-                PromptSelectionOptions pso = new PromptSelectionOptions();
-                pso.MessageForAdding = "\n请框选或点选分析线 (支持批量添加): ";
-
-                var res = ed.GetSelection(pso);
+                var res = ed.GetSelection();
                 if (res.Status != PromptStatus.OK) return;
 
                 using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
                 {
-                    HashSet<string> currentBatchFingerprints = new HashSet<string>();
+                    // 用于过滤本次选择中重复的组或物体
+                    HashSet<string> processedInThisBatch = new HashSet<string>();
                     int addedCount = 0;
-                    int skipCount = 0;
 
                     foreach (SelectedObject selObj in res.Value)
                     {
-                        Entity ent = tr.GetObject(selObj.ObjectId, OpenMode.ForRead) as Entity;
-                        string fingerprint = GetAnimFingerprint(tr, ent?.ObjectId ?? ObjectId.Null);
-
+                        // ✨ 使用增强版的获取逻辑，它会自动处理“组溯源”
+                        string fingerprint = GetAnimFingerprint(tr, selObj.ObjectId);
                         if (string.IsNullOrEmpty(fingerprint)) continue;
 
-                        // 1. 过滤本次选择集内部的重复（针对阵列线）
-                        if (currentBatchFingerprints.Contains(fingerprint)) continue;
-
-                        // 2. 过滤已经在列表中的重复
-                        if (IsFingerprintAlreadyExists(tr, fingerprint))
-                        {
-                            skipCount++;
+                        // 过滤重复（包含列表已有的和本次循环已处理的）
+                        if (processedInThisBatch.Contains(fingerprint) || IsFingerprintAlreadyExists(tr, fingerprint))
                             continue;
-                        }
 
-                        currentBatchFingerprints.Add(fingerprint);
+                        processedInThisBatch.Add(fingerprint);
 
+                        Entity ent = tr.GetObject(selObj.ObjectId, OpenMode.ForRead) as Entity;
                         var item = CreatePathItemFromEntity(tr, ent, fingerprint);
                         if (item != null)
                         {
@@ -92,16 +82,8 @@ namespace Plugin_AnalysisMaster.UI
                         }
                     }
                     tr.Commit();
-
-                    if (addedCount > 0)
-                        ed.WriteMessage($"\n[成功] 已添加 {addedCount} 条新路径。");
-                    if (skipCount > 0)
-                        ed.WriteMessage($"\n[提示] 忽略了 {skipCount} 条已存在的重复路径。");
+                    ed.WriteMessage($"\n[成功] 已识别并添加 {addedCount} 条分析路径。");
                 }
-            }
-            catch (System.Exception ex)
-            {
-                ed.WriteMessage($"\n[错误] 添加失败: {ex.Message}");
             }
             finally
             {
@@ -124,8 +106,41 @@ namespace Plugin_AnalysisMaster.UI
         // 辅助方法：获取实体的动画指纹
         private string GetAnimFingerprint(Transaction tr, ObjectId id)
         {
-            if (id.IsNull || !id.IsValid || id.IsErased) return ""; // ✨ 增加预检
+            if (id.IsNull || !id.IsValid || id.IsErased) return "";
 
+            // 1. 直接检查当前物体是否有数据
+            string fp = GetDirectFingerprint(tr, id);
+            if (!string.IsNullOrEmpty(fp)) return fp;
+
+            // 2. 如果当前物体没数据，检查它所属的组（解决阵列线点击成员添加不上的问题）
+            Entity ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
+            if (ent != null)
+            {
+                ObjectIdCollection groupIds = ent.GetPersistentReactorIds();
+                if (groupIds != null)
+                {
+                    foreach (ObjectId gId in groupIds)
+                    {
+                        if (gId.IsValid && !gId.IsErased && gId.ObjectClass.IsDerivedFrom(RXClass.GetClass(typeof(Group))))
+                        {
+                            Group gp = tr.GetObject(gId, OpenMode.ForRead) as Group;
+                            if (gp != null)
+                            {
+                                // 遍历组员，寻找那个带有“动画指纹”的头节点
+                                foreach (ObjectId memberId in gp.GetAllEntityIds())
+                                {
+                                    string memberFp = GetDirectFingerprint(tr, memberId);
+                                    if (!string.IsNullOrEmpty(memberFp)) return memberFp;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return "";
+        }
+        private string GetDirectFingerprint(Transaction tr, ObjectId id)
+        {
             Entity ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
             if (ent == null || ent.ExtensionDictionary.IsNull) return "";
 
@@ -137,10 +152,9 @@ namespace Plugin_AnalysisMaster.UI
             {
                 if (rb == null) return "";
                 var arr = rb.AsArray();
-                return arr.Length > 0 ? arr[0].Value.ToString() : ""; // ✨ 防止越界
+                return arr.Length > 0 ? arr[0].Value.ToString() : "";
             }
         }
-
         private void RemovePath_Click(object sender, RoutedEventArgs e)
         {
             var selectedItems = PathListView.SelectedItems.Cast<AnimPathItem>().ToList();
