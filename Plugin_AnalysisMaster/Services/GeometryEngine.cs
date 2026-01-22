@@ -650,8 +650,7 @@ namespace Plugin_AnalysisMaster.Services
 
         /// <summary>
         /// 核心方法：根据绘制点位和样式，生成实体并存入数据库
-        /// 替换原有的 DrawAnalysisLine 结尾处的保存逻辑
-        /// </summary>
+        // --- 修改后的 FinalizeAndSave ---
         public static void FinalizeAndSave(List<Point3d> points, AnalysisStyle style, List<Point3d> sampledPoints)
         {
             if (points == null || points.Count < 2) return;
@@ -663,29 +662,46 @@ namespace Plugin_AnalysisMaster.Services
             {
                 using (Transaction tr = db.TransactionManager.StartTransaction())
                 {
-                    BlockTableRecord modelSpace = (BlockTableRecord)tr.GetObject(SymbolUtilityServices.GetBlockModelSpaceId(db), OpenMode.ForWrite);
-                    List<Entity> createdEntities = new List<Entity>();
+                    BlockTableRecord modelSpace = (BlockTableRecord)tr.GetObject(
+                        SymbolUtilityServices.GetBlockModelSpaceId(db), OpenMode.ForWrite);
 
-                    if (style.PathType == PathCategory.Solid)
+                    // 创建路径曲线参考
+                    Point3dCollection ptsCol = new Point3dCollection(points.ToArray());
+                    Curve pathCurve = CreatePathCurve(ptsCol, style.IsCurved);
+
+                    using (pathCurve)
                     {
-                        // 调用 RenderBody，传入它需要的 6 个参数
-                        // 注意：如果 RenderBody 内部已经执行了 AppendEntity，则后续 AddToDb 不再重复添加
-                        Polyline pl = RenderBody(modelSpace, tr, doc.Editor, null, style, null);
-                        if (pl != null) createdEntities.Add(pl);
-                    }
-                    else
-                    {
-                        // 阵列模式：调用你项目中实际的阵列生成逻辑
-                        // 这里我暂时放一个逻辑占位，请根据你实际的阵列生成方法名修改
-                        // 如果你的阵列生成方法叫 RenderPattern，请在此处调用
-                        // var blocks = RenderPattern(points, style); 
-                        // foreach(var b in blocks) createdEntities.Add(b);
-                    }
+                        // ✨ 必须创建一个 ID 集合传进去，供 RenderBody/RenderPath 填充
+                        ObjectIdCollection ids = new ObjectIdCollection();
 
-                    // 调用新版的列表写入方法
-                    // 注意：因为我们已经在事务中了，所以这里调用内部逻辑
-                    SaveEntitiesToDbInternal(tr, modelSpace, createdEntities, style, sampledPoints);
+                        if (style.PathType == PathCategory.Solid)
+                        {
+                            // ✨ 修复：RenderBody 返回 void，不要赋值给 pl
+                            RenderBody(modelSpace, tr, doc.Editor, pathCurve, style, ids);
+                        }
+                        else
+                        {
+                            // ✨ 修复：调用 RenderPath 处理阵列模式
+                            RenderPath(modelSpace, tr, doc.Editor, pathCurve, style, ids);
+                        }
 
+                        // 如果生成的物体带动画采样（针对 FinalizeAndSave 这种直接保存的情况）
+                        if (ids.Count > 0 && style.IsAnimated && sampledPoints != null)
+                        {
+                            Entity firstEnt = tr.GetObject(ids[0], OpenMode.ForWrite) as Entity;
+                            if (firstEnt != null) WriteFingerprint(tr, firstEnt, style, sampledPoints);
+                        }
+
+                        // 如果有多个实体（阵列），执行自动打组，解决阵列卡顿
+                        if (ids.Count > 1)
+                        {
+                            Group gp = new Group("AnalysisGroup", true);
+                            DBDictionary groupDict = (DBDictionary)tr.GetObject(db.GroupDictionaryId, OpenMode.ForWrite);
+                            groupDict.SetAt("*", gp);
+                            tr.AddNewlyCreatedDBObject(gp, true);
+                            gp.Append(ids);
+                        }
+                    }
                     tr.Commit();
                 }
             }
@@ -775,10 +791,53 @@ namespace Plugin_AnalysisMaster.Services
             // 写入指纹（这里 sampledPoints 传空，因为旧调用通常没有采样点）
             WriteFingerprint(tr, ent, style, null);
         }
+        // --- 修复：支持单体保存并返回 ObjectId 的重载 ---
+        // 解决错误：CS1503 (void 无法转换为 ObjectId) 和 CS1501 (没有 5 个参数的重载)
+        // --- 重载 2：给单条实体用的（旧代码兼容重载） ---
+        // 解决 CS1503 (void 无法转换为 ObjectId) 和 CS1501 (参数不匹配)
+        // --- 修改后的 AddToDb (单体版本) ---
+        // --- 请确保这里的返回类型是 ObjectId 而不是 void ---
+        public static ObjectId AddToDb(BlockTableRecord btr, Transaction tr, Entity ent, AnalysisStyle style, Curve rawPath = null)
+        {
+            if (ent == null) return ObjectId.Null;
 
+            // 1. 如果实体还没加入数据库，则加入
+            if (ent.ObjectId.IsNull)
+            {
+                btr.AppendEntity(ent);
+                tr.AddNewlyCreatedDBObject(ent, true);
+            }
+
+            // 2. 动画采样逻辑：如果开启了动画且传入了原始路径，则生成采样点
+            List<Point3d> sampledPoints = null;
+            if (style.IsAnimated && rawPath != null)
+            {
+                sampledPoints = new List<Point3d>();
+                try
+                {
+                    double len = rawPath.GetDistanceAtParameter(rawPath.EndParam);
+                    // 使用样式中的采样间距，默认 5.0
+                    double step = style.SamplingInterval > 0 ? style.SamplingInterval : 5.0;
+                    int count = (int)Math.Max(len / step, 10);
+                    for (int i = 0; i <= count; i++)
+                    {
+                        double dist = Math.Min(len, i * step);
+                        sampledPoints.Add(rawPath.GetPointAtDist(dist));
+                    }
+                }
+                catch { /* 忽略几何异常 */ }
+            }
+
+            // 3. 写入唯一指纹（内部已包含 Guid）
+            WriteFingerprint(tr, ent, style, sampledPoints);
+
+            // ✨ 关键：必须返回 ObjectId，否则 606, 369, 398 行会报错
+            return ent.ObjectId;
+        }
         // --- 3. 抽离出的指纹写入逻辑（私有辅助） ---
         private static void WriteFingerprint(Transaction tr, Entity ent, AnalysisStyle style, List<Point3d> sampledPoints)
         {
+            // 如果未开开启记录，或没有采样点，则跳过
             if (!style.IsAnimated || sampledPoints == null || sampledPoints.Count == 0) return;
 
             if (ent.ExtensionDictionary.IsNull)
@@ -788,6 +847,8 @@ namespace Plugin_AnalysisMaster.Services
             }
 
             DBDictionary dict = (DBDictionary)tr.GetObject(ent.ExtensionDictionary, OpenMode.ForWrite);
+
+            // 生成包含 GUID 的唯一指纹
             string fingerprint = $"{style.PathType}|{style.IsCurved}|{style.SelectedBlockName}|{DateTime.Now.Ticks}|{style.MainColor}|{Guid.NewGuid()}";
 
             using (Xrecord xRec = new Xrecord())
@@ -798,7 +859,7 @@ namespace Plugin_AnalysisMaster.Services
 
                 foreach (Point3d pt in sampledPoints)
                 {
-                    rb.Add(new TypedValue((int)DxfCode.Real, pt.X)); // 解决 PlotStationery 报错
+                    rb.Add(new TypedValue((int)DxfCode.Real, pt.X));
                     rb.Add(new TypedValue((int)DxfCode.Real, pt.Y));
                     rb.Add(new TypedValue((int)DxfCode.Real, pt.Z));
                 }
