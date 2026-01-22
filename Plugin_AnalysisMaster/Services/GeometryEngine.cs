@@ -22,28 +22,21 @@ namespace Plugin_AnalysisMaster.Services
     {
 
         private const string RegAppName = "ANALYSIS_MASTER_STYLE";
-        // 存放每条路径预读取的数据，避免循环中操作数据库
-        // 文件：GeometryEngine.cs -> PathPlaybackData 类
-        // 位置：GeometryEngine.cs 约第 26 行
-        // 存放每条路径预读取的数据
-        // 存放每条路径预读取的数据
+        // 修改位置：GeometryEngine.cs 约第 26 行
         private class PathPlaybackData
         {
             public List<Point3d> Points { get; set; }
             public Autodesk.AutoCAD.Colors.Color Color { get; set; }
             public string Layer { get; set; }
             public ObjectId OriginalId { get; set; }
-
-            // ✨ 新增：存储该路径所属组的所有成员 ID 及其对应位置
-            public List<KeyValuePair<ObjectId, Point3d>> SortedMembers { get; set; } = new List<KeyValuePair<ObjectId, Point3d>>();
-            // ✨ 新增：记录当前动画已显示到的成员索引
-            public int LastShownMemberIndex { get; set; } = 0;
+            // ✨ 简化：删除了 SortedMembers 和 LastShownMemberIndex
         }
 
         /// <summary>
         /// 异步播放序列逻辑
         /// </summary>
         // 位置：GeometryEngine.cs 约第 40 行
+        // 修改位置：GeometryEngine.cs -> PlaySequenceAsync
         public static async Task PlaySequenceAsync(
               List<AnimPathItem> items,
               double thickness,
@@ -76,9 +69,8 @@ namespace Plugin_AnalysisMaster.Services
             {
                 do
                 {
-                    // A. 隐藏所有原始线（包括阵列中的所有单元）
+                    // A. 隐藏所有原始实体（包括阵列单元）
                     ToggleEntitiesVisibility(items.Select(i => i.Id), false);
-                    allData.ForEach(d => d.LastShownMemberIndex = 0); // 重置索引
 
                     var groupedData = items
                         .Select(x => new { item = x, data = allData.FirstOrDefault(d => d.OriginalId == x.Id) })
@@ -94,6 +86,7 @@ namespace Plugin_AnalysisMaster.Services
                         var groupPaths = group.ToList();
                         int[] lastAddedIndices = new int[groupPaths.Count];
 
+                        // B. 初始化引导线
                         foreach (var path in groupPaths)
                         {
                             Polyline pl = new Polyline { Plinegen = true };
@@ -106,7 +99,7 @@ namespace Plugin_AnalysisMaster.Services
                             activeTransients.Add(pl);
                         }
 
-                        int maxPts = groupPaths.Max(p => p.data.Points.Count);
+                        // C. 引导线生长循环
                         for (int currentStep = speedMultiplier; ; currentStep += speedMultiplier)
                         {
                             if (token.IsCancellationRequested) return;
@@ -121,35 +114,10 @@ namespace Plugin_AnalysisMaster.Services
                                 int nextPtIdx = Math.Min(currentStep, data.Points.Count - 1);
                                 if (nextPtIdx > lastAddedIndices[i])
                                 {
-                                    // 1. 更新黄色临时线生长
                                     int vtxIdx = pl.NumberOfVertices;
                                     pl.AddVertexAt(vtxIdx, new Point2d(data.Points[nextPtIdx].X, data.Points[nextPtIdx].Y), 0, 0, 0);
                                     lastAddedIndices[i] = nextPtIdx;
                                     TransientManager.CurrentTransientManager.UpdateTransient(pl, vps);
-
-                                    // 2. ✨ 核心同步逻辑：根据当前生长距离显示阵列单元
-                                    if (data.SortedMembers.Count > data.LastShownMemberIndex)
-                                    {
-                                        Point3d currentAnimPt = data.Points[nextPtIdx];
-                                        double currentGrowthDist = currentAnimPt.DistanceTo(data.Points[0]);
-
-                                        using (Transaction trSync = doc.Database.TransactionManager.StartTransaction())
-                                        {
-                                            // 只要单元离起点的距离 <= 当前黄色线长的距离，就显示它
-                                            while (data.LastShownMemberIndex < data.SortedMembers.Count)
-                                            {
-                                                var member = data.SortedMembers[data.LastShownMemberIndex];
-                                                if (member.Value.DistanceTo(data.Points[0]) <= currentGrowthDist + 0.1) // 增加 0.1 容差
-                                                {
-                                                    Entity mEnt = trSync.GetObject(member.Key, OpenMode.ForWrite) as Entity;
-                                                    if (mEnt != null) mEnt.Visible = true;
-                                                    data.LastShownMemberIndex++;
-                                                }
-                                                else break;
-                                            }
-                                            trSync.Commit();
-                                        }
-                                    }
                                 }
                                 if (lastAddedIndices[i] < data.Points.Count - 1) allFinished = false;
                             }
@@ -158,17 +126,26 @@ namespace Plugin_AnalysisMaster.Services
                             await Task.Delay(10, token);
                             if (allFinished) break;
                         }
+
+                        // ✨ D. 简化核心：本组引导线长完后，立即显示该组对应的所有原始单元
+                        // 这里的 ToggleEntitiesVisibility 会通过组关联自动显示所有阵列块
+                        ToggleEntitiesVisibility(groupPaths.Select(p => p.item.Id), true);
+
+                        // 此时可以移除当前组的引导线，防止重叠
+                        foreach (var pl in currentGroupLines)
+                        {
+                            TransientManager.CurrentTransientManager.EraseTransient(pl, vps);
+                            activeTransients.Remove(pl);
+                            pl.Dispose();
+                        }
                     }
                     if (!isLoop) break;
-                    ClearTransients(activeTransients, vps);
-                    activeTransients.Clear();
                     await Task.Delay(500, token);
                 } while (isLoop && !token.IsCancellationRequested);
             }
             finally
             {
                 ClearTransients(activeTransients, vps);
-                // 确保动画结束后所有物体（包括阵列成员）恢复可见
                 ToggleEntitiesVisibility(items.Select(i => i.Id), true);
                 ed.UpdateScreen();
             }
@@ -176,6 +153,7 @@ namespace Plugin_AnalysisMaster.Services
 
         // 辅助方法：读取实体数据
         // 位置：GeometryEngine.cs 约第 105 行
+        // 修改位置：GeometryEngine.cs 约第 105 行
         private static PathPlaybackData FetchPathData(Transaction tr, ObjectId id)
         {
             Entity ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
@@ -200,45 +178,13 @@ namespace Plugin_AnalysisMaster.Services
                         pts.Add((Point3d)dataArr[i].Value);
                 }
 
-                var playbackData = new PathPlaybackData
+                return new PathPlaybackData
                 {
                     Points = pts,
                     Color = Autodesk.AutoCAD.Colors.Color.FromRgb(mediaColor.R, mediaColor.G, mediaColor.B),
                     Layer = ent.Layer,
                     OriginalId = id
                 };
-
-                // ✨ 核心修复：获取编组内所有成员并排序
-                ObjectIdCollection reactors = ent.GetPersistentReactorIds();
-                if (reactors != null)
-                {
-                    foreach (ObjectId rId in reactors)
-                    {
-                        if (rId.IsValid && !rId.IsErased && rId.ObjectClass.IsDerivedFrom(RXClass.GetClass(typeof(Group))))
-                        {
-                            Group gp = tr.GetObject(rId, OpenMode.ForRead) as Group;
-                            if (gp != null)
-                            {
-                                foreach (ObjectId mId in gp.GetAllEntityIds())
-                                {
-                                    Entity member = tr.GetObject(mId, OpenMode.ForRead) as Entity;
-                                    if (member != null)
-                                    {
-                                        // 记录成员位置（图块取 Position，线条取起点）
-                                        Point3d pos = (member is BlockReference br) ? br.Position : (member is Curve cv ? cv.StartPoint : pts[0]);
-                                        playbackData.SortedMembers.Add(new KeyValuePair<ObjectId, Point3d>(mId, pos));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                // ✨ 关键点：按距离起点的顺序排序，否则生长会乱序跳动
-                playbackData.SortedMembers = playbackData.SortedMembers
-                    .OrderBy(m => m.Value.DistanceTo(pts[0]))
-                    .ToList();
-
-                return playbackData;
             }
         }
 
