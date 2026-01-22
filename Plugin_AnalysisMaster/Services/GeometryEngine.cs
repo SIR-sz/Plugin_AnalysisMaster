@@ -92,8 +92,11 @@ namespace Plugin_AnalysisMaster.Services
                             Polyline pl = new Polyline { Plinegen = true };
                             pl.Color = path.data.Color;
                             pl.Layer = path.data.Layer;
-                            pl.AddVertexAt(0, new Point2d(path.data.Points[0].X, path.data.Points[0].Y), 0, 0, 0);
-                            pl.ConstantWidth = thickness;
+
+                            // ✨ 修改：在添加第一个点时就传入 thickness
+                            pl.AddVertexAt(0, new Point2d(path.data.Points[0].X, path.data.Points[0].Y), 0, thickness, thickness);
+
+                            pl.ConstantWidth = thickness; // 保持全局宽度设置
                             TransientManager.CurrentTransientManager.AddTransient(pl, TransientDrawingMode.DirectTopmost, 128, vps);
                             currentGroupLines.Add(pl);
                             activeTransients.Add(pl);
@@ -115,7 +118,11 @@ namespace Plugin_AnalysisMaster.Services
                                 if (nextPtIdx > lastAddedIndices[i])
                                 {
                                     int vtxIdx = pl.NumberOfVertices;
-                                    pl.AddVertexAt(vtxIdx, new Point2d(data.Points[nextPtIdx].X, data.Points[nextPtIdx].Y), 0, 0, 0);
+
+                                    // ✨ 核心修复：将 0, 0 改为 thickness, thickness
+                                    // 确保后续生长的每一段线段都继承用户设置的加粗宽度
+                                    pl.AddVertexAt(vtxIdx, new Point2d(data.Points[nextPtIdx].X, data.Points[nextPtIdx].Y), 0, thickness, thickness);
+
                                     lastAddedIndices[i] = nextPtIdx;
                                     TransientManager.CurrentTransientManager.UpdateTransient(pl, vps);
                                 }
@@ -129,7 +136,7 @@ namespace Plugin_AnalysisMaster.Services
 
                         // ✨ D. 简化核心：本组引导线长完后，立即显示该组对应的所有原始单元
                         // 这里的 ToggleEntitiesVisibility 会通过组关联自动显示所有阵列块
-                        ToggleEntitiesVisibility(groupPaths.Select(p => p.item.Id), true);
+                        ToggleEntitiesVisibility(groupPaths.Select(p => p.item.Id), isPersistent);
 
                         // 此时可以移除当前组的引导线，防止重叠
                         foreach (var pl in currentGroupLines)
@@ -146,7 +153,11 @@ namespace Plugin_AnalysisMaster.Services
             finally
             {
                 ClearTransients(activeTransients, vps);
-                ToggleEntitiesVisibility(items.Select(i => i.Id), true);
+
+                // ✨ 修复：根据 isPersistent 参数决定是否恢复所有选中路径的可见性
+                // 如果不勾选（false），则播放完后实体将保持隐藏状态
+                ToggleEntitiesVisibility(items.Select(i => i.Id), isPersistent);
+
                 ed.UpdateScreen();
             }
         }

@@ -61,19 +61,22 @@ namespace Plugin_AnalysisMaster.UI
                     HashSet<string> processedInThisBatch = new HashSet<string>();
                     int addedCount = 0;
 
+                    // 修改位置：AnimationWindow.xaml.cs -> AddPath_Click 内部循环 (约 76 行)
                     foreach (SelectedObject selObj in res.Value)
                     {
-                        // ✨ 使用增强版的获取逻辑，它会自动处理“组溯源”
-                        string fingerprint = GetAnimFingerprint(tr, selObj.ObjectId);
+                        ObjectId actualDataHolder;
+                        // ✨ 调用新版方法，获取 actualDataHolder
+                        string fingerprint = GetAnimFingerprint(tr, selObj.ObjectId, out actualDataHolder);
+
                         if (string.IsNullOrEmpty(fingerprint)) continue;
 
-                        // 过滤重复（包含列表已有的和本次循环已处理的）
                         if (processedInThisBatch.Contains(fingerprint) || IsFingerprintAlreadyExists(tr, fingerprint))
                             continue;
 
                         processedInThisBatch.Add(fingerprint);
 
-                        Entity ent = tr.GetObject(selObj.ObjectId, OpenMode.ForRead) as Entity;
+                        // ✨ 关键修复：使用持有数据的实体来创建列表项
+                        Entity ent = tr.GetObject(actualDataHolder, OpenMode.ForRead) as Entity;
                         var item = CreatePathItemFromEntity(tr, ent, fingerprint);
                         if (item != null)
                         {
@@ -92,45 +95,58 @@ namespace Plugin_AnalysisMaster.UI
         }
 
         // 辅助方法：检查列表中是否已存在该指纹
+        // 修改位置：AnimationWindow.xaml.cs 约第 101 行
         private bool IsFingerprintAlreadyExists(Transaction tr, string fingerprint)
         {
             foreach (var item in _pathList)
             {
-                // 获取列表中已有实体的指纹进行比对
-                string existingFingerprint = GetAnimFingerprint(tr, item.Id);
+                // ✨ 修复 CS7036 错误：
+                // 因为 GetAnimFingerprint 现在需要 3 个参数，这里使用 "out _" 来忽略掉不需要的 dataHolderId
+                string existingFingerprint = GetAnimFingerprint(tr, item.Id, out _);
+
                 if (existingFingerprint == fingerprint) return true;
             }
             return false;
         }
 
         // 辅助方法：获取实体的动画指纹
-        private string GetAnimFingerprint(Transaction tr, ObjectId id)
+        // 修改位置：AnimationWindow.xaml.cs 约 132 行
+        // ✨ 新增 out 参数，用于返回真正持有数据的 ID
+        private string GetAnimFingerprint(Transaction tr, ObjectId id, out ObjectId dataHolderId)
         {
+            dataHolderId = ObjectId.Null;
             if (id.IsNull || !id.IsValid || id.IsErased) return "";
 
-            // 1. 直接检查当前物体是否有数据
+            // 1. 检查当前物体
             string fp = GetDirectFingerprint(tr, id);
-            if (!string.IsNullOrEmpty(fp)) return fp;
+            if (!string.IsNullOrEmpty(fp))
+            {
+                dataHolderId = id;
+                return fp;
+            }
 
-            // 2. 如果当前物体没数据，检查它所属的组（解决阵列线点击成员添加不上的问题）
+            // 2. 检查所属编组
             Entity ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
             if (ent != null)
             {
-                ObjectIdCollection groupIds = ent.GetPersistentReactorIds();
-                if (groupIds != null)
+                ObjectIdCollection reactors = ent.GetPersistentReactorIds();
+                if (reactors != null)
                 {
-                    foreach (ObjectId gId in groupIds)
+                    foreach (ObjectId rId in reactors)
                     {
-                        if (gId.IsValid && !gId.IsErased && gId.ObjectClass.IsDerivedFrom(RXClass.GetClass(typeof(Group))))
+                        if (rId.IsValid && rId.ObjectClass.IsDerivedFrom(RXClass.GetClass(typeof(Group))))
                         {
-                            Group gp = tr.GetObject(gId, OpenMode.ForRead) as Group;
+                            Group gp = tr.GetObject(rId, OpenMode.ForRead) as Group;
                             if (gp != null)
                             {
-                                // 遍历组员，寻找那个带有“动画指纹”的头节点
                                 foreach (ObjectId memberId in gp.GetAllEntityIds())
                                 {
                                     string memberFp = GetDirectFingerprint(tr, memberId);
-                                    if (!string.IsNullOrEmpty(memberFp)) return memberFp;
+                                    if (!string.IsNullOrEmpty(memberFp))
+                                    {
+                                        dataHolderId = memberId; // ✨ 记录持有数据的成员
+                                        return memberFp;
+                                    }
                                 }
                             }
                         }
