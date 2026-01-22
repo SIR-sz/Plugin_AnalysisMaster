@@ -20,9 +20,109 @@ namespace Plugin_AnalysisMaster.Services
 {
     public static class GeometryEngine
     {
+        // ✨ 顶部增加一个静态列表，用于管理序号标签
+        private static List<DBObject> _labelTransients = new List<DBObject>();
+        private static IntegerCollection _labelVps = new IntegerCollection();
 
         private const string RegAppName = "ANALYSIS_MASTER_STYLE";
-        // 修改位置：GeometryEngine.cs 约第 26 行
+        /// <summary>
+        /// 更新图面上的路径编号标签
+        /// </summary>
+        public static void UpdatePathLabels(List<AnimPathItem> items, bool show)
+        {
+            ClearPathLabels(); // 先清理旧标签
+            if (!show || items == null || items.Count == 0) return;
+
+            Document doc = Application.DocumentManager.MdiActiveDocument;
+            // 使用当前文档的事务
+            using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
+            {
+                for (int i = 0; i < items.Count; i++)
+                {
+                    var item = items[i];
+                    // 获取路径的采样点数据（用于定位起点）
+                    var data = FetchPathData(tr, item.Id);
+                    if (data == null || data.Points.Count == 0) continue;
+
+                    Point3d startPt = data.Points[0];
+
+                    // ✨ 调整参数：让圆圈更大，文字更清晰
+                    double radius = 8.0;   // 圆圈半径增大
+                    double textHeight = 10.0; // 文字高度
+
+                    // 1. 创建圆圈
+                    Circle circle = new Circle(startPt, Vector3d.ZAxis, radius);
+                    circle.Color = Color.FromColorIndex(ColorMethod.ByAci, 2); // 黄色
+                    circle.Thickness = 0.5; // 增加一点厚度感
+
+                    // 2. 创建序号文字 (改用 MText 解决对齐问题)
+                    MText mtext = new MText();
+                    mtext.Contents = (i + 1).ToString();
+                    mtext.TextHeight = textHeight;
+                    mtext.Location = startPt;
+                    mtext.Attachment = AttachmentPoint.MiddleCenter; // 居中对齐
+                    mtext.Color = Color.FromColorIndex(ColorMethod.ByAci, 2); // 黄色
+
+                    // 3. 添加到瞬态管理器 (Topmost 确保不被遮挡)
+                    TransientManager.CurrentTransientManager.AddTransient(circle, TransientDrawingMode.DirectTopmost, 128, _labelVps);
+                    TransientManager.CurrentTransientManager.AddTransient(mtext, TransientDrawingMode.DirectTopmost, 128, _labelVps);
+
+                    _labelTransients.Add(circle);
+                    _labelTransients.Add(mtext);
+                }
+                tr.Commit();
+            }
+        }
+        public static void ClearPathLabels()
+        {
+            if (_labelTransients.Count == 0) return;
+            foreach (var obj in _labelTransients)
+            {
+                TransientManager.CurrentTransientManager.EraseTransient(obj, _labelVps);
+                obj.Dispose();
+            }
+            _labelTransients.Clear();
+        }
+        /// <summary>
+        /// 高亮/取消高亮指定路径及其所在的编组
+        /// </summary>
+        public static void HighlightPath(ObjectId id, bool highlight)
+        {
+            if (id.IsNull || !id.IsValid) return;
+
+            Document doc = Application.DocumentManager.MdiActiveDocument;
+            using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
+            {
+                Entity ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
+                if (ent == null) return;
+
+                // 获取编组内所有成员进行同步高亮
+                HashSet<ObjectId> idsToHighlight = new HashSet<ObjectId> { id };
+                ObjectIdCollection reactors = ent.GetPersistentReactorIds();
+                if (reactors != null)
+                {
+                    foreach (ObjectId rId in reactors)
+                    {
+                        if (rId.ObjectClass.IsDerivedFrom(RXClass.GetClass(typeof(Group))))
+                        {
+                            Group gp = tr.GetObject(rId, OpenMode.ForRead) as Group;
+                            if (gp != null) foreach (ObjectId mId in gp.GetAllEntityIds()) idsToHighlight.Add(mId);
+                        }
+                    }
+                }
+
+                foreach (ObjectId hId in idsToHighlight)
+                {
+                    Entity target = tr.GetObject(hId, OpenMode.ForRead) as Entity;
+                    if (target != null)
+                    {
+                        if (highlight) target.Highlight();
+                        else target.Unhighlight();
+                    }
+                }
+                tr.Commit();
+            }
+        }
         private class PathPlaybackData
         {
             public List<Point3d> Points { get; set; }

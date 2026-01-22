@@ -252,15 +252,40 @@ namespace Plugin_AnalysisMaster.UI
         #endregion
 
         #region 3. UI 交互逻辑 (编号提示等)
-
-        private void PathListView_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        // 1. 响应“显示编号”按钮点击
+        private void BtnShowLabels_Click(object sender, RoutedEventArgs e)
         {
-            if (PathListView.SelectedItem is AnimPathItem item)
-            {
-                ShowNumberTip(item.Id, _pathList.IndexOf(item) + 1);
-            }
+            bool isShow = BtnShowLabels.IsChecked == true;
+            GeometryEngine.UpdatePathLabels(_pathList.ToList(), isShow);
         }
 
+        // 2. 列表选中高亮逻辑
+        private ObjectId _lastSelectedId = ObjectId.Null;
+        private void PathListView_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            // A. 取消之前的高亮
+            if (!_lastSelectedId.IsNull)
+            {
+                GeometryEngine.HighlightPath(_lastSelectedId, false);
+            }
+
+            if (PathListView.SelectedItem is AnimPathItem item)
+            {
+                // B. 高亮当前选中项
+                GeometryEngine.HighlightPath(item.Id, true);
+                _lastSelectedId = item.Id;
+            }
+            else
+            {
+                _lastSelectedId = ObjectId.Null;
+            }
+        }
+        // 3. 确保窗口关闭时清理标签
+        protected override void OnClosed(EventArgs e)
+        {
+            GeometryEngine.ClearPathLabels();
+            base.OnClosed(e);
+        }
         private void ShowNumberTip(ObjectId id, int index)
         {
             // 这里可以调用 GeometryEngine 里的一个简单方法
