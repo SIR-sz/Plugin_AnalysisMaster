@@ -63,14 +63,6 @@ namespace Plugin_AnalysisMaster.UI
                 UpdatePreview();
             };
         }
-        /// <summary>
-        /// 将静态模型中的数据回填到 UI 界面。
-        /// 修改逻辑：增加了对动画开关 IsAnimated 和延迟时间 AnimationDelay 的状态恢复。
-        /// </summary>
-        /// <summary>
-        /// 将静态模型中的数据回填到 UI 界面。
-        /// 修改逻辑：增加了对采样间距 SamplingInterval 的恢复。
-        /// </summary>
         private void ApplyStyleToUI()
         {
             if (_currentStyle == null) return;
@@ -125,11 +117,11 @@ namespace Plugin_AnalysisMaster.UI
             if (CapIndentSlider != null) CapIndentSlider.Value = _currentStyle.CapIndent;
             if (ColorPreview != null) ColorPreview.Fill = new SolidColorBrush(_currentStyle.MainColor);
 
-            // 5. 恢复动画设置状态
-            if (IsAnimatedCheckBox != null) IsAnimatedCheckBox.IsChecked = _currentStyle.IsAnimated;
-            if (AnimationDelaySlider != null) AnimationDelaySlider.Value = _currentStyle.AnimationDelay;
-            // ✨ 恢复采样间距
-            if (SamplingIntervalSlider != null) SamplingIntervalSlider.Value = _currentStyle.SamplingInterval;
+            // ✨ 5. 恢复动画记录设置
+            if (IsAnimatedCheckBox != null)
+                IsAnimatedCheckBox.IsChecked = _currentStyle.IsAnimated;
+            if (SamplingIntervalSlider != null)
+                SamplingIntervalSlider.Value = _currentStyle.SamplingInterval;
         }
         /// <summary>
         /// 加载资源库并同时填充两个图元下拉框。
@@ -239,32 +231,28 @@ namespace Plugin_AnalysisMaster.UI
             _currentStyle.ArrowSize = ArrowSizeSlider?.Value ?? 1.0;
             _currentStyle.CapIndent = CapIndentSlider?.Value ?? 0.0;
 
-            // 同步动画参数
+            // ✨ 6. 同步动画记录参数
             _currentStyle.IsAnimated = IsAnimatedCheckBox?.IsChecked ?? false;
-            _currentStyle.AnimationDelay = (int)(AnimationDelaySlider?.Value ?? 10);
-            // ✨ 同步采样间距
             _currentStyle.SamplingInterval = SamplingIntervalSlider?.Value ?? 5.0;
+
+            // 注：AnimationDelay (播放时间) 现在由“动画管理器”窗口的播放参数控制，主界面不再同步
         }
-        /// <summary>
-        /// 触发动画回放逻辑。
-        /// 修改逻辑：调用 GeometryEngine.PlayPathAnimation 启动拾取和播放流程。
-        /// </summary>
-        private void PlayAnimation_Click(object sender, RoutedEventArgs e)
+        private void BtnOpenAnimManager_Click(object sender, RoutedEventArgs e)
         {
-            this.Hide();
             try
             {
-                GeometryEngine.PlayPathAnimation();
+                // 实例化你刚才创建的新窗口
+                AnimationWindow animWin = new AnimationWindow();
+
+                // 使用 AutoCAD 的方式显示非模态窗口
+                Autodesk.AutoCAD.ApplicationServices.Application.ShowModelessWindow(animWin);
             }
             catch (System.Exception ex)
             {
-                Autodesk.AutoCAD.ApplicationServices.Application.ShowAlertDialog("回放失败：" + ex.Message);
-            }
-            finally
-            {
-                this.Show();
+                System.Windows.MessageBox.Show("打开动画管理器失败: " + ex.Message);
             }
         }
+
         /// <summary>
         /// 刷新预览画布的核心逻辑。
         /// 包含：
@@ -641,10 +629,26 @@ namespace Plugin_AnalysisMaster.UI
 
         private void StartDraw_Click(object sender, RoutedEventArgs e)
         {
+            // 调用统一的同步方法
             SyncStyleFromUI();
+
+            // 隐藏主窗口，开始 CAD 交互绘制
             this.Hide();
-            try { GeometryEngine.DrawAnalysisLine(null, _currentStyle); }
-            finally { this.Show(); }
+            try
+            {
+                // 执行绘图引擎逻辑
+                GeometryEngine.DrawAnalysisLine(null, _currentStyle);
+            }
+            catch (System.Exception ex)
+            {
+                Autodesk.AutoCAD.ApplicationServices.Application.ShowAlertDialog("绘制失败：" + ex.Message);
+            }
+            finally
+            {
+                this.Show();
+                // 刷新界面预览
+                UpdatePreview();
+            }
         }
 
         private void PickBlock_Click(object sender, RoutedEventArgs e)

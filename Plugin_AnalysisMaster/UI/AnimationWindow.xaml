@@ -1,7 +1,14 @@
 ﻿<Window x:Class="Plugin_AnalysisMaster.UI.AnimationWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:Plugin_AnalysisMaster.UI" 
         Title="分析动画管理器" Height="500" Width="350" Topmost="True" WindowStartupLocation="CenterOwner">
+
+    <Window.Resources>
+        <local:IndexConverter x:Key="IndexConverter"/>
+        <local:ColorToBrushConverter x:Key="ColorToBrushConverter"/>
+    </Window.Resources>
+
     <Grid Margin="10">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>

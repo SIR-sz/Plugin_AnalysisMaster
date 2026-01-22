@@ -136,7 +136,18 @@ namespace Plugin_AnalysisMaster.Services
             {
                 // D. 最终清理
                 ClearTransients(activeTransients, vps);
-                ToggleEntitiesVisibility(items.Select(i => i.Id), true);
+
+                // ✨ 核心修改：只有勾选了“保留迹线”，才把原始线恢复显示
+                if (isPersistent)
+                {
+                    ToggleEntitiesVisibility(items.Select(i => i.Id), true);
+                }
+                else
+                {
+                    // 如果不保留，我们不仅不恢复显示，甚至可以提示用户是否需要删除它们
+                    // 或者保持隐藏状态，让用户通过其他方式恢复
+                }
+
                 ed.UpdateScreen();
             }
         }
@@ -188,18 +199,66 @@ namespace Plugin_AnalysisMaster.Services
         }
 
         // 辅助方法：批量切换可见性
+        /// <summary>
+        /// 批量切换实体可见性（增强版：支持自动隐藏关联组）
+        /// </summary>
         private static void ToggleEntitiesVisibility(IEnumerable<ObjectId> ids, bool visible)
         {
             Document doc = Application.DocumentManager.MdiActiveDocument;
+            if (doc == null) return;
+
             using (doc.LockDocument())
-            using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
             {
-                foreach (var id in ids)
+                using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
                 {
-                    Entity ent = tr.GetObject(id, OpenMode.ForWrite) as Entity;
-                    if (ent != null) ent.Visible = visible;
+                    // 使用 HashSet 防止重复处理同一个组员
+                    HashSet<ObjectId> allToToggle = new HashSet<ObjectId>();
+
+                    foreach (var id in ids)
+                    {
+                        if (id.IsNull || !id.IsValid) continue;
+                        allToToggle.Add(id);
+
+                        // ✨ 核心逻辑：检查该实体是否属于某个 Group (常见于阵列模式)
+                        Entity ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
+                        if (ent != null)
+                        {
+                            ObjectIdCollection reactorIds = ent.GetPersistentReactorIds();
+                            if (reactorIds != null)
+                            {
+                                foreach (ObjectId rId in reactorIds)
+                                {
+                                    // 检查反应器是否为 Group 类型
+                                    if (rId.ObjectClass.IsDerivedFrom(RXClass.GetClass(typeof(Group))))
+                                    {
+                                        Group gp = tr.GetObject(rId, OpenMode.ForRead) as Group;
+                                        if (gp != null)
+                                        {
+                                            // 将组内所有成员加入待操作列表
+                                            foreach (ObjectId memberId in gp.GetAllEntityIds())
+                                            {
+                                                if (!allToToggle.Contains(memberId))
+                                                    allToToggle.Add(memberId);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // 统一执行可见性切换
+                    foreach (var toggleId in allToToggle)
+                    {
+                        Entity target = tr.GetObject(toggleId, OpenMode.ForWrite) as Entity;
+                        if (target != null)
+                        {
+                            target.Visible = visible;
+                        }
+                    }
+
+                    tr.Commit();
                 }
-                tr.Commit();
             }
         }
 
