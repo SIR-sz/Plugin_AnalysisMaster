@@ -21,7 +21,20 @@ namespace Plugin_AnalysisMaster.UI
         // 使用 ObservableCollection 确保 UI 列表自动刷新
         private ObservableCollection<AnimPathItem> _pathList = new ObservableCollection<AnimPathItem>();
         private CancellationTokenSource _cts;
+        // 在 AnimationWindow 类中添加以下方法
 
+        private void TitleBar_MouseLeftButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            if (e.LeftButton == System.Windows.Input.MouseButtonState.Pressed)
+            {
+                this.DragMove(); // 允许点击标题栏拖动窗口
+            }
+        }
+
+        private void Close_Click(object sender, RoutedEventArgs e)
+        {
+            this.Close(); // 关闭窗口
+        }
         public AnimationWindow()
         {
             InitializeComponent();
@@ -41,54 +54,54 @@ namespace Plugin_AnalysisMaster.UI
             try
             {
                 PromptSelectionOptions pso = new PromptSelectionOptions();
-                pso.MessageForAdding = "\n请框选或点选带有动画数据的分析线: ";
+                pso.MessageForAdding = "\n请框选或点选分析线 (支持批量添加): ";
 
                 var res = ed.GetSelection(pso);
                 if (res.Status != PromptStatus.OK) return;
 
                 using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
                 {
-                    // 记录本次操作已处理的指纹，避免框选内重复
-                    HashSet<string> processedFingerprints = new HashSet<string>();
+                    HashSet<string> currentBatchFingerprints = new HashSet<string>();
+                    int addedCount = 0;
+                    int skipCount = 0;
 
                     foreach (SelectedObject selObj in res.Value)
                     {
                         Entity ent = tr.GetObject(selObj.ObjectId, OpenMode.ForRead) as Entity;
-                        if (ent == null || ent.ExtensionDictionary.IsNull) continue;
-
-                        DBDictionary dict = tr.GetObject(ent.ExtensionDictionary, OpenMode.ForRead) as DBDictionary;
-                        if (!dict.Contains("ANALYSIS_ANIM_DATA")) continue;
-
-                        // ✨ 核心修改：读取该实体的唯一指纹
-                        Xrecord xRec = tr.GetObject(dict.GetAt("ANALYSIS_ANIM_DATA"), OpenMode.ForRead) as Xrecord;
-                        string fingerprint = "";
-                        using (ResultBuffer rb = xRec.Data)
-                        {
-                            TypedValue[] dataArr = rb.AsArray();
-                            fingerprint = dataArr[0].Value.ToString();
-                        }
+                        string fingerprint = GetAnimFingerprint(tr, ent?.ObjectId ?? ObjectId.Null);
 
                         if (string.IsNullOrEmpty(fingerprint)) continue;
 
-                        // 1. 检查本次批量选择中是否已经添加过这条线
-                        if (processedFingerprints.Contains(fingerprint)) continue;
+                        // 1. 过滤本次选择集内部的重复（针对阵列线）
+                        if (currentBatchFingerprints.Contains(fingerprint)) continue;
 
-                        // 2. 检查 UI 列表中是否已经存在具有相同指纹的路径（针对多次点击的情况）
-                        // 注意：这里需要我们在 CreatePathItemFromEntity 中把 Fingerprint 存入模型，或者通过 ID 反查
-                        if (IsFingerprintAlreadyExists(tr, fingerprint)) continue;
+                        // 2. 过滤已经在列表中的重复
+                        if (IsFingerprintAlreadyExists(tr, fingerprint))
+                        {
+                            skipCount++;
+                            continue;
+                        }
 
-                        processedFingerprints.Add(fingerprint);
+                        currentBatchFingerprints.Add(fingerprint);
 
-                        // 解析数据构建模型
                         var item = CreatePathItemFromEntity(tr, ent, fingerprint);
-                        if (item != null) _pathList.Add(item);
+                        if (item != null)
+                        {
+                            _pathList.Add(item);
+                            addedCount++;
+                        }
                     }
                     tr.Commit();
+
+                    if (addedCount > 0)
+                        ed.WriteMessage($"\n[成功] 已添加 {addedCount} 条新路径。");
+                    if (skipCount > 0)
+                        ed.WriteMessage($"\n[提示] 忽略了 {skipCount} 条已存在的重复路径。");
                 }
             }
             catch (System.Exception ex)
             {
-                ed.WriteMessage($"\n[错误] 添加路径失败: {ex.Message}");
+                ed.WriteMessage($"\n[错误] 添加失败: {ex.Message}");
             }
             finally
             {
@@ -111,6 +124,8 @@ namespace Plugin_AnalysisMaster.UI
         // 辅助方法：获取实体的动画指纹
         private string GetAnimFingerprint(Transaction tr, ObjectId id)
         {
+            if (id.IsNull || !id.IsValid || id.IsErased) return ""; // ✨ 增加预检
+
             Entity ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
             if (ent == null || ent.ExtensionDictionary.IsNull) return "";
 
@@ -120,7 +135,9 @@ namespace Plugin_AnalysisMaster.UI
             Xrecord xRec = tr.GetObject(dict.GetAt("ANALYSIS_ANIM_DATA"), OpenMode.ForRead) as Xrecord;
             using (ResultBuffer rb = xRec.Data)
             {
-                return rb.AsArray()[0].Value.ToString();
+                if (rb == null) return "";
+                var arr = rb.AsArray();
+                return arr.Length > 0 ? arr[0].Value.ToString() : ""; // ✨ 防止越界
             }
         }
 
@@ -165,13 +182,8 @@ namespace Plugin_AnalysisMaster.UI
 
         private async void BtnPlay_Click(object sender, RoutedEventArgs e)
         {
-            if (_pathList.Count == 0)
-            {
-                MessageBox.Show("请先添加路径到列表。");
-                return;
-            }
+            if (_pathList.Count == 0) return;
 
-            // 更新 UI 状态
             BtnPlay.IsEnabled = false;
             BtnStop.IsEnabled = true;
             _cts = new CancellationTokenSource();
@@ -179,25 +191,20 @@ namespace Plugin_AnalysisMaster.UI
             try
             {
                 double thickness = ThicknessSlider.Value;
+                int speed = (int)SpeedSlider.Value; // 获取倍速 (1-20)
                 bool isLoop = LoopCheck.IsChecked == true;
                 bool isPersistent = PersistenceCheck.IsChecked == true;
 
-                // 核心：调用异步引擎
                 await GeometryEngine.PlaySequenceAsync(
                     _pathList.ToList(),
                     thickness,
+                    speed, // 传入倍速
                     isLoop,
                     isPersistent,
                     _cts.Token);
             }
-            catch (OperationCanceledException)
-            {
-                // 正常取消，不处理
-            }
-            catch (System.Exception ex)
-            {
-                MessageBox.Show("播放过程出错: " + ex.Message);
-            }
+            catch (OperationCanceledException) { }
+            catch (System.Exception ex) { MessageBox.Show("播放出错: " + ex.Message); }
             finally
             {
                 BtnPlay.IsEnabled = true;

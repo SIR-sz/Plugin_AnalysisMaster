@@ -233,7 +233,7 @@ namespace Plugin_AnalysisMaster.UI
 
             // ✨ 6. 同步动画记录参数
             _currentStyle.IsAnimated = IsAnimatedCheckBox?.IsChecked ?? false;
-            _currentStyle.SamplingInterval = SamplingIntervalSlider?.Value ?? 5.0;
+            _currentStyle.SamplingInterval = SamplingIntervalSlider?.Value ?? 20.0;
 
             // 注：AnimationDelay (播放时间) 现在由“动画管理器”窗口的播放参数控制，主界面不再同步
         }

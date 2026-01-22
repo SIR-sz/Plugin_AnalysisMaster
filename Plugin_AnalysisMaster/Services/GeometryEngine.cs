@@ -13,6 +13,7 @@ using System.Linq;                // ✨ 新增
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Windows.Controls;
 using Polyline = Autodesk.AutoCAD.DatabaseServices.Polyline;
 
 namespace Plugin_AnalysisMaster.Services
@@ -34,17 +35,18 @@ namespace Plugin_AnalysisMaster.Services
         /// 异步播放序列逻辑
         /// </summary>
         public static async Task PlaySequenceAsync(
-            List<AnimPathItem> items,
-            double thickness,
-            bool isLoop,
-            bool isPersistent,
-            CancellationToken token)
+             List<AnimPathItem> items,
+             double thickness,
+             int speedMultiplier, // 接收倍速
+             bool isLoop,
+             bool isPersistent,
+             CancellationToken token)
         {
             Document doc = Application.DocumentManager.MdiActiveDocument;
             if (doc == null) return;
             Editor ed = doc.Editor;
 
-            // 1. 预读取所有数据到内存
+            // 1. 预读取
             List<PathPlaybackData> allData = new List<PathPlaybackData>();
             using (doc.LockDocument())
             using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
@@ -58,8 +60,6 @@ namespace Plugin_AnalysisMaster.Services
             }
 
             if (allData.Count == 0) return;
-
-            // 记录所有已创建的瞬态对象，用于最后统一清理
             List<Polyline> activeTransients = new List<Polyline>();
             IntegerCollection vps = new IntegerCollection();
 
@@ -67,12 +67,11 @@ namespace Plugin_AnalysisMaster.Services
             {
                 do
                 {
-                    // A. 隐藏所有原始线条
+                    // A. 隐藏原始线（包含组支持）
                     ToggleEntitiesVisibility(items.Select(i => i.Id), false);
 
-                    // 按组号分组并排序
                     var groupedData = items
-                        .Select((item, index) => new { item, data = allData.FirstOrDefault(d => d.OriginalId == item.Id) })
+                        .Select(x => new { item = x, data = allData.FirstOrDefault(d => d.OriginalId == x.Id) })
                         .Where(x => x.data != null)
                         .GroupBy(x => x.item.GroupNumber)
                         .OrderBy(g => g.Key);
@@ -83,71 +82,67 @@ namespace Plugin_AnalysisMaster.Services
 
                         List<Polyline> currentGroupLines = new List<Polyline>();
                         var groupPaths = group.ToList();
+                        int[] lastAddedIndices = new int[groupPaths.Count];
 
-                        // B. 初始化本组所有瞬态线（显示起点）
+                        // B. 初始化起点
                         foreach (var path in groupPaths)
                         {
-                            Polyline pl = new Polyline();
+                            Polyline pl = new Polyline { Plinegen = true };
                             pl.Color = path.data.Color;
                             pl.Layer = path.data.Layer;
-                            pl.ConstantWidth = thickness; // 应用演示加粗
                             pl.AddVertexAt(0, new Point2d(path.data.Points[0].X, path.data.Points[0].Y), 0, 0, 0);
-
+                            pl.ConstantWidth = thickness;
                             TransientManager.CurrentTransientManager.AddTransient(pl, TransientDrawingMode.DirectTopmost, 128, vps);
                             currentGroupLines.Add(pl);
                             activeTransients.Add(pl);
                         }
 
-                        // C. 组内同步生长循环
-                        int maxSteps = groupPaths.Max(p => p.data.Points.Count);
-                        for (int step = 1; step < maxSteps; step++)
+                        // C. 增强版倍速生长循环
+                        int maxPts = groupPaths.Max(p => p.data.Points.Count);
+                        // 通过 speedMultiplier 跳点，大幅提升视觉速度
+                        for (int currentStep = speedMultiplier; ; currentStep += speedMultiplier)
                         {
                             if (token.IsCancellationRequested) return;
+                            bool allFinished = true;
 
                             for (int i = 0; i < groupPaths.Count; i++)
                             {
-                                var pathData = groupPaths[i].data;
-                                if (step < pathData.Points.Count)
+                                var data = groupPaths[i].data;
+                                var pl = currentGroupLines[i];
+                                if (lastAddedIndices[i] >= data.Points.Count - 1) continue;
+
+                                // 计算下一个点位（确保不越界）
+                                int nextPtIdx = Math.Min(currentStep, data.Points.Count - 1);
+                                if (nextPtIdx > lastAddedIndices[i])
                                 {
-                                    currentGroupLines[i].AddVertexAt(step, new Point2d(pathData.Points[step].X, pathData.Points[step].Y), 0, 0, 0);
-                                    TransientManager.CurrentTransientManager.UpdateTransient(currentGroupLines[i], vps);
+                                    int vtxIdx = pl.NumberOfVertices;
+                                    pl.AddVertexAt(vtxIdx, new Point2d(data.Points[nextPtIdx].X, data.Points[nextPtIdx].Y), 0, 0, 0);
+                                    pl.SetStartWidthAt(vtxIdx - 1, thickness);
+                                    pl.SetEndWidthAt(vtxIdx - 1, thickness);
+
+                                    lastAddedIndices[i] = nextPtIdx;
+                                    TransientManager.CurrentTransientManager.UpdateTransient(pl, vps);
                                 }
+                                if (lastAddedIndices[i] < data.Points.Count - 1) allFinished = false;
                             }
 
                             Autodesk.AutoCAD.Internal.Utils.FlushGraphics();
-                            await Task.Delay(20, token); // 使用带 Token 的延迟
+                            // 保持固定的小延迟（10ms），主要通过跳点来提速
+                            await Task.Delay(10, token);
+                            if (allFinished) break;
                         }
                     }
-
                     if (!isLoop) break;
-
-                    // 循环模式下，重新开始前清理一遍
                     ClearTransients(activeTransients, vps);
                     activeTransients.Clear();
-                    await Task.Delay(500, token); // 循环间隔
-
+                    await Task.Delay(500, token);
                 } while (isLoop && !token.IsCancellationRequested);
-            }
-            catch (OperationCanceledException)
-            {
-                // 捕获取消异常，不向外抛出
             }
             finally
             {
-                // D. 最终清理
                 ClearTransients(activeTransients, vps);
-
-                // ✨ 核心修改：只有勾选了“保留迹线”，才把原始线恢复显示
-                if (isPersistent)
-                {
-                    ToggleEntitiesVisibility(items.Select(i => i.Id), true);
-                }
-                else
-                {
-                    // 如果不保留，我们不仅不恢复显示，甚至可以提示用户是否需要删除它们
-                    // 或者保持隐藏状态，让用户通过其他方式恢复
-                }
-
+                // ✨ 修正：只有勾选“保留迹线”才恢复原始线
+                if (isPersistent) ToggleEntitiesVisibility(items.Select(i => i.Id), true);
                 ed.UpdateScreen();
             }
         }
@@ -198,67 +193,48 @@ namespace Plugin_AnalysisMaster.Services
             }
         }
 
-        // 辅助方法：批量切换可见性
         /// <summary>
-        /// 批量切换实体可见性（增强版：支持自动隐藏关联组）
+        /// 批量切换实体可见性（增强版：增加安全性校验，防止 eInvalidInput）
         /// </summary>
+       // 辅助：支持 Group 自动隐藏的可见性控制
         private static void ToggleEntitiesVisibility(IEnumerable<ObjectId> ids, bool visible)
         {
             Document doc = Application.DocumentManager.MdiActiveDocument;
-            if (doc == null) return;
-
             using (doc.LockDocument())
+            using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
             {
-                using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
+                HashSet<ObjectId> allToToggle = new HashSet<ObjectId>();
+                foreach (var id in ids)
                 {
-                    // 使用 HashSet 防止重复处理同一个组员
-                    HashSet<ObjectId> allToToggle = new HashSet<ObjectId>();
-
-                    foreach (var id in ids)
+                    if (id.IsNull || !id.IsValid || id.IsErased) continue;
+                    allToToggle.Add(id);
+                    Entity ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
+                    if (ent != null)
                     {
-                        if (id.IsNull || !id.IsValid) continue;
-                        allToToggle.Add(id);
-
-                        // ✨ 核心逻辑：检查该实体是否属于某个 Group (常见于阵列模式)
-                        Entity ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
-                        if (ent != null)
+                        ObjectIdCollection reactors = ent.GetPersistentReactorIds();
+                        if (reactors != null)
                         {
-                            ObjectIdCollection reactorIds = ent.GetPersistentReactorIds();
-                            if (reactorIds != null)
+                            foreach (ObjectId rId in reactors)
                             {
-                                foreach (ObjectId rId in reactorIds)
+                                if (rId.IsValid && !rId.IsErased && rId.ObjectClass.IsDerivedFrom(RXClass.GetClass(typeof(Group))))
                                 {
-                                    // 检查反应器是否为 Group 类型
-                                    if (rId.ObjectClass.IsDerivedFrom(RXClass.GetClass(typeof(Group))))
-                                    {
-                                        Group gp = tr.GetObject(rId, OpenMode.ForRead) as Group;
-                                        if (gp != null)
-                                        {
-                                            // 将组内所有成员加入待操作列表
-                                            foreach (ObjectId memberId in gp.GetAllEntityIds())
-                                            {
-                                                if (!allToToggle.Contains(memberId))
-                                                    allToToggle.Add(memberId);
-                                            }
-                                        }
-                                    }
+                                    Group gp = tr.GetObject(rId, OpenMode.ForRead) as Group;
+                                    if (gp != null) foreach (ObjectId mId in gp.GetAllEntityIds()) allToToggle.Add(mId);
                                 }
                             }
                         }
                     }
-
-                    // 统一执行可见性切换
-                    foreach (var toggleId in allToToggle)
-                    {
-                        Entity target = tr.GetObject(toggleId, OpenMode.ForWrite) as Entity;
-                        if (target != null)
-                        {
-                            target.Visible = visible;
-                        }
-                    }
-
-                    tr.Commit();
                 }
+                foreach (var tId in allToToggle)
+                {
+                    try
+                    {
+                        Entity target = tr.GetObject(tId, OpenMode.ForWrite) as Entity;
+                        if (target != null) target.Visible = visible;
+                    }
+                    catch { continue; }
+                }
+                tr.Commit();
             }
         }
 
@@ -673,81 +649,163 @@ namespace Plugin_AnalysisMaster.Services
         }
 
         /// <summary>
-        /// 实体入库并附加样式指纹及动画采样点。
-        /// 修改逻辑：增加了调试信息输出。
-        /// 在保存动画数据时，会向命令行发送记录的采样点数量，方便确认数据是否已成功持久化。
+        /// 核心方法：根据绘制点位和样式，生成实体并存入数据库
+        /// 替换原有的 DrawAnalysisLine 结尾处的保存逻辑
         /// </summary>
-        private static ObjectId AddToDb(BlockTableRecord btr, Transaction tr, Entity ent, AnalysisStyle style, Curve rawPath = null)
+        public static void FinalizeAndSave(List<Point3d> points, AnalysisStyle style, List<Point3d> sampledPoints)
         {
-            Editor ed = Application.DocumentManager.MdiActiveDocument.Editor;
+            if (points == null || points.Count < 2) return;
 
-            // 1. 基础属性设置
-            Database db = btr.Database;
-            RegAppTable rat = (RegAppTable)tr.GetObject(db.RegAppTableId, OpenMode.ForRead);
-            if (!rat.Has(RegAppName))
+            Document doc = Application.DocumentManager.MdiActiveDocument;
+            Database db = doc.Database;
+
+            using (DocumentLock loc = doc.LockDocument())
             {
-                rat.UpgradeOpen();
-                RegAppTableRecord ratr = new RegAppTableRecord { Name = RegAppName };
-                rat.Add(ratr);
-                tr.AddNewlyCreatedDBObject(ratr, true);
-            }
-
-            ent.Layer = style.TargetLayer;
-            ent.Color = Autodesk.AutoCAD.Colors.Color.FromRgb(style.MainColor.R, style.MainColor.G, style.MainColor.B);
-
-            // 2. 写入样式指纹 (XData)
-            string styleFingerprint = string.Format("{0}|{1}|{2}|{3}|{4}|{5}|{6}",
-                style.PathType, style.SelectedBlockName, style.SelectedBlockName2, style.IsComposite,
-                style.MainColor.ToString(), style.StartArrowType, style.EndArrowType);
-
-            ResultBuffer rbXData = new ResultBuffer(
-                new TypedValue((int)DxfCode.ExtendedDataRegAppName, RegAppName),
-                new TypedValue((int)DxfCode.ExtendedDataAsciiString, styleFingerprint)
-            );
-            ent.XData = rbXData;
-
-            // 3. 先将实体添加到数据库
-            ObjectId id = btr.AppendEntity(ent);
-            tr.AddNewlyCreatedDBObject(ent, true);
-
-            // 4. 实体入库后，存储动画路径数据
-            if (style.IsAnimated && rawPath != null)
-            {
-                ent.CreateExtensionDictionary();
-                DBDictionary dict = tr.GetObject(ent.ExtensionDictionary, OpenMode.ForWrite) as DBDictionary;
-
-                using (Xrecord xRec = new Xrecord())
+                using (Transaction tr = db.TransactionManager.StartTransaction())
                 {
-                    using (ResultBuffer rbAnim = new ResultBuffer())
+                    BlockTableRecord modelSpace = (BlockTableRecord)tr.GetObject(SymbolUtilityServices.GetBlockModelSpaceId(db), OpenMode.ForWrite);
+                    List<Entity> createdEntities = new List<Entity>();
+
+                    if (style.PathType == PathCategory.Solid)
                     {
-                        rbAnim.Add(new TypedValue((int)DxfCode.Text, styleFingerprint));
-                        rbAnim.Add(new TypedValue((int)DxfCode.Real, style.SamplingInterval));
-
-                        int ptCount = 0;
-                        double totalLen = rawPath.GetDistanceAtParameter(rawPath.EndParam);
-                        for (double d = 0; d <= totalLen; d += style.SamplingInterval)
-                        {
-                            rbAnim.Add(new TypedValue((int)DxfCode.XCoordinate, rawPath.GetPointAtDist(d)));
-                            ptCount++;
-                        }
-                        rbAnim.Add(new TypedValue((int)DxfCode.XCoordinate, rawPath.EndPoint));
-                        ptCount++;
-
-                        xRec.Data = rbAnim;
-                        dict.SetAt("ANALYSIS_ANIM_DATA", xRec);
-                        tr.AddNewlyCreatedDBObject(xRec, true);
-
-                        // ✨ 调试日志：确认保存成功
-                        ed.WriteMessage($"\n[动画调试] 成功保存动画数据：采样点数 = {ptCount}, 采样间距 = {style.SamplingInterval}");
+                        // 调用 RenderBody，传入它需要的 6 个参数
+                        // 注意：如果 RenderBody 内部已经执行了 AppendEntity，则后续 AddToDb 不再重复添加
+                        Polyline pl = RenderBody(modelSpace, tr, doc.Editor, null, style, null);
+                        if (pl != null) createdEntities.Add(pl);
                     }
+                    else
+                    {
+                        // 阵列模式：调用你项目中实际的阵列生成逻辑
+                        // 这里我暂时放一个逻辑占位，请根据你实际的阵列生成方法名修改
+                        // 如果你的阵列生成方法叫 RenderPattern，请在此处调用
+                        // var blocks = RenderPattern(points, style); 
+                        // foreach(var b in blocks) createdEntities.Add(b);
+                    }
+
+                    // 调用新版的列表写入方法
+                    // 注意：因为我们已经在事务中了，所以这里调用内部逻辑
+                    SaveEntitiesToDbInternal(tr, modelSpace, createdEntities, style, sampledPoints);
+
+                    tr.Commit();
                 }
             }
-            else if (style.IsAnimated && rawPath == null)
+        }
+        // --- 3. 新版列表写入方法 (用于 FinalizeAndSave 内部调用) ---
+        private static void SaveEntitiesToDbInternal(Transaction tr, BlockTableRecord btr, List<Entity> entities, AnalysisStyle style, List<Point3d> sampledPoints)
+        {
+            if (entities == null || entities.Count == 0) return;
+
+            ObjectIdCollection ids = new ObjectIdCollection();
+            foreach (Entity ent in entities)
             {
-                ed.WriteMessage("\n[动画调试] 警告：开启动画记录但路径原始曲线(rawPath)为空。");
+                if (ent.ObjectId.IsNull)
+                {
+                    btr.AppendEntity(ent);
+                    tr.AddNewlyCreatedDBObject(ent, true);
+                }
+                ids.Add(ent.ObjectId);
             }
 
-            return id;
+            // 自动打组逻辑
+            if (ids.Count > 1)
+            {
+                Group gp = new Group("AnalysisGroup", true);
+                DBDictionary groupDict = (DBDictionary)tr.GetObject(btr.Database.GroupDictionaryId, OpenMode.ForWrite);
+                groupDict.SetAt("*", gp);
+                tr.AddNewlyCreatedDBObject(gp, true);
+                gp.Append(ids);
+            }
+
+            // 在第一个实体上写指纹
+            WriteFingerprint(tr, entities[0], style, sampledPoints);
+        }
+        /// <summary>
+        /// 优化后的 AddToDb：实现“高性能打组”与“单指纹写入”
+        /// 彻底解决阵列模式卡顿问题
+        /// </summary>
+        // --- 1. 给列表用的（新方法，处理阵列并打组） ---
+        public static void AddToDb(List<Entity> entities, AnalysisStyle style, List<Point3d> sampledPoints)
+        {
+            if (entities == null || entities.Count == 0) return;
+            Database db = HostApplicationServices.WorkingDatabase;
+            using (var tr = db.TransactionManager.StartTransaction())
+            {
+                BlockTableRecord btr = (BlockTableRecord)tr.GetObject(SymbolUtilityServices.GetBlockModelSpaceId(db), OpenMode.ForWrite);
+
+                ObjectIdCollection ids = new ObjectIdCollection();
+                foreach (Entity ent in entities)
+                {
+                    if (ent.ObjectId.IsNull) // 只有没加入数据库的才添加
+                    {
+                        btr.AppendEntity(ent);
+                        tr.AddNewlyCreatedDBObject(ent, true);
+                    }
+                    ids.Add(ent.ObjectId);
+                }
+
+                // 自动打组
+                if (ids.Count > 1)
+                {
+                    Group gp = new Group("AnalysisGroup", true);
+                    DBDictionary groupDict = (DBDictionary)tr.GetObject(db.GroupDictionaryId, OpenMode.ForWrite);
+                    groupDict.SetAt("*", gp);
+                    tr.AddNewlyCreatedDBObject(gp, true);
+                    gp.Append(ids);
+                }
+
+                // 仅在第一个实体写指纹
+                WriteFingerprint(tr, entities[0], style, sampledPoints);
+                tr.Commit();
+            }
+        }
+
+        // --- 2. 给单条实体用的（旧代码兼容重载） ---
+        // 如果旧代码报错说缺少参数，请根据报错提示补全参数，比如加入 BlockTableRecord 或 Transaction
+        public static void AddToDb(BlockTableRecord btr, Transaction tr, Entity ent, AnalysisStyle style)
+        {
+            if (ent == null) return;
+
+            // 如果实体还没加入数据库，则加入
+            if (ent.ObjectId.IsNull)
+            {
+                btr.AppendEntity(ent);
+                tr.AddNewlyCreatedDBObject(ent, true);
+            }
+
+            // 写入指纹（这里 sampledPoints 传空，因为旧调用通常没有采样点）
+            WriteFingerprint(tr, ent, style, null);
+        }
+
+        // --- 3. 抽离出的指纹写入逻辑（私有辅助） ---
+        private static void WriteFingerprint(Transaction tr, Entity ent, AnalysisStyle style, List<Point3d> sampledPoints)
+        {
+            if (!style.IsAnimated || sampledPoints == null || sampledPoints.Count == 0) return;
+
+            if (ent.ExtensionDictionary.IsNull)
+            {
+                ent.UpgradeOpen();
+                ent.CreateExtensionDictionary();
+            }
+
+            DBDictionary dict = (DBDictionary)tr.GetObject(ent.ExtensionDictionary, OpenMode.ForWrite);
+            string fingerprint = $"{style.PathType}|{style.IsCurved}|{style.SelectedBlockName}|{DateTime.Now.Ticks}|{style.MainColor}|{Guid.NewGuid()}";
+
+            using (Xrecord xRec = new Xrecord())
+            {
+                ResultBuffer rb = new ResultBuffer();
+                rb.Add(new TypedValue((int)DxfCode.Text, fingerprint));
+                rb.Add(new TypedValue((int)DxfCode.Int32, sampledPoints.Count));
+
+                foreach (Point3d pt in sampledPoints)
+                {
+                    rb.Add(new TypedValue((int)DxfCode.Real, pt.X)); // 解决 PlotStationery 报错
+                    rb.Add(new TypedValue((int)DxfCode.Real, pt.Y));
+                    rb.Add(new TypedValue((int)DxfCode.Real, pt.Z));
+                }
+                xRec.Data = rb;
+                dict.SetAt("ANALYSIS_ANIM_DATA", xRec);
+                tr.AddNewlyCreatedDBObject(xRec, true);
+            }
         }
         /// <summary>
         /// 图例生成逻辑。

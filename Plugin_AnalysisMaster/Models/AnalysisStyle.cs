@@ -44,6 +44,6 @@ namespace Plugin_AnalysisMaster.Models
         public int AnimationDelay { get; set; } = 10;
 
         // ✨ 新增：采样间距（用于存储和回放）
-        public double SamplingInterval { get; set; } = 5.0;
+        public double SamplingInterval { get; set; } = 20.0;
     }
 }

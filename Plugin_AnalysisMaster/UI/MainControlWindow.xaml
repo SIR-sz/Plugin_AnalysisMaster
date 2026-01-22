@@ -307,7 +307,7 @@
                                     <ColumnDefinition Width="*"/>
                                     <ColumnDefinition Width="60"/>
                                 </Grid.ColumnDefinitions>
-                                <Slider x:Name="SamplingIntervalSlider" Minimum="0.5" Maximum="100" Value="5.0" ValueChanged="OnParamChanged"/>
+                                <Slider x:Name="SamplingIntervalSlider" Minimum="0.5" Maximum="100" Value="20.0" ValueChanged="OnParamChanged"/>
                                 <TextBox Grid.Column="1" Text="{Binding ElementName=SamplingIntervalSlider, Path=Value, UpdateSourceTrigger=PropertyChanged, StringFormat={}{0:F1}}" Style="{StaticResource ValueInputStyle}"/>
                             </Grid>
                         </StackPanel>
