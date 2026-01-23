@@ -200,9 +200,16 @@ namespace Plugin_AnalysisMaster.UI
             }
             return "";
         }
+        /// <summary>
+        /// 从实体的扩展字典中读取动画指纹，并执行严格的数据有效性校验。
+        /// 修改说明：
+        /// 1. 增加了点位计数检查：只有包含 2 个及以上采样点的数据才被视为“有效动画路径”。
+        /// 2. 自动过滤空数据：如果某条线在绘制时未开开启“动画记录”，此方法将返回空字符串，从而使其无法被添加到播放列表。
+        /// </summary>
         private string GetDirectFingerprint(Transaction tr, ObjectId id)
         {
             Entity ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
+            // 如果实体没有扩展字典，直接过滤
             if (ent == null || ent.ExtensionDictionary.IsNull) return "";
 
             DBDictionary dict = tr.GetObject(ent.ExtensionDictionary, OpenMode.ForRead) as DBDictionary;
@@ -213,7 +220,26 @@ namespace Plugin_AnalysisMaster.UI
             {
                 if (rb == null) return "";
                 var arr = rb.AsArray();
-                return arr.Length > 0 ? arr[0].Value.ToString() : "";
+
+                // ✨ 核心优化：校验 ResultBuffer 的长度
+                // 数据结构为：[0]:样式指纹, [1]:点数统计, [2...]:坐标点
+                if (arr.Length < 4) return ""; // 至少要有指纹、计数和 2 个点才算有效
+
+                // 读取点位计数（存储在索引 1 的 Int32 类型中）
+                int pointCount = 0;
+                if (arr.Length > 1 && arr[1].Value is int count)
+                {
+                    pointCount = count;
+                }
+
+                // ✨ 核心过滤逻辑：如果点位少于 2 个，说明这只是一条普通线，不具备动画回放能力
+                if (pointCount < 2)
+                {
+                    return "";
+                }
+
+                // 数据合法，返回指纹字符串供列表显示
+                return arr[0].Value.ToString();
             }
         }
         private void RemovePath_Click(object sender, RoutedEventArgs e)

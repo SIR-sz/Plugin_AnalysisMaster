@@ -284,14 +284,13 @@ namespace Plugin_AnalysisMaster.Services
             using (ResultBuffer rb = xRec.Data)
             {
                 TypedValue[] dataArr = rb.AsArray();
+
+                // ✨ 安全检查：确保数据长度足以解析出至少 2 个坐标点
+                if (dataArr.Length < 4) return null;
+
                 string fingerprint = dataArr[0].Value.ToString();
                 string[] parts = fingerprint.Split('|');
-
-                // ✨ 核心修复：索引从 4 改为 5
                 if (parts.Length < 6) return null;
-                var colorStr = parts[5];
-
-                var mediaColor = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(colorStr);
 
                 List<Point3d> pts = new List<Point3d>();
                 for (int i = 2; i < dataArr.Length; i++)
@@ -299,6 +298,12 @@ namespace Plugin_AnalysisMaster.Services
                     if (dataArr[i].TypeCode == (int)DxfCode.XCoordinate)
                         pts.Add((Point3d)dataArr[i].Value);
                 }
+
+                // ✨ 再次确认：如果解析出的点位不足，不返回数据对象
+                if (pts.Count < 2) return null;
+
+                var colorStr = parts[5];
+                var mediaColor = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(colorStr);
 
                 return new PathPlaybackData
                 {
@@ -370,44 +375,44 @@ namespace Plugin_AnalysisMaster.Services
         /// 动线绘制主入口：支持多点连续拾取与自动打组。
         /// 修改逻辑：将 Editor 对象显式传递给下级渲染方法以支持动画。
         /// </summary>
+        /// <summary>
+        /// 动线绘制主入口。
+        /// 修改说明：将原有的直接 Add 操作改为调用 jig.AddPoint()，以触发自适应夹点精简算法。
+        /// </summary>
         public static void DrawAnalysisLine(Point3dCollection inputPoints, AnalysisStyle style)
         {
             Document doc = Application.DocumentManager.MdiActiveDocument;
             Editor ed = doc.Editor;
             Point3dCollection points = inputPoints;
 
-            // 1. 交互式点位获取
             if (points == null)
             {
                 PromptPointOptions ppo = new PromptPointOptions("\n指定起点: ");
                 PromptPointResult ppr = ed.GetPoint(ppo);
                 if (ppr.Status != PromptStatus.OK) return;
 
+                // --- 请替换 GeometryEngine.cs 中 DrawAnalysisLine 的 while 循环 ---
                 var jig = new AnalysisLineJig(ppr.Value, style);
                 while (true)
                 {
                     var res = ed.Drag(jig);
                     if (res.Status == PromptStatus.OK)
                     {
-                        jig.GetPoints().Add(jig.LastPoint);
+                        // ✨ 核心修复：调用 AddPoint 而不是 GetPoints().Add()
+                        jig.AddPoint(jig.LastPoint);
                     }
-                    else if (res.Status == PromptStatus.None)
+                    else if (res.Status == PromptStatus.None) // 右键或回车确认
                     {
-                        jig.GetPoints().Add(jig.LastPoint);
+                        jig.AddPoint(jig.LastPoint);
                         break;
                     }
-                    else
-                    {
-                        if (jig.GetPoints().Count < 2) return;
-                        break;
-                    }
+                    else break;
                 }
                 points = jig.GetPoints();
             }
 
             if (points == null || points.Count < 2) return;
 
-            // 2. 执行数据库写入
             using (DocumentLock dl = doc.LockDocument())
             {
                 Database db = doc.Database;
@@ -420,29 +425,18 @@ namespace Plugin_AnalysisMaster.Services
                     Curve path = CreatePathCurve(points, style.IsCurved);
                     using (path)
                     {
-                        // 1. 渲染几何体
                         RenderPath(btr, tr, ed, path, style, allIds);
-
-                        // ✨ 修改：只要生成了实体，就写入样式数据（指纹）
                         if (allIds.Count > 0)
                         {
                             Entity headEnt = tr.GetObject(allIds[0], OpenMode.ForWrite) as Entity;
                             if (headEnt != null)
                             {
-                                List<Point3d> skeletonPoints = null;
-                                // 只有开启动画时才进行耗时的曲线采样
-                                if (style.IsAnimated)
-                                {
-                                    skeletonPoints = SampleCurve(path, style.SamplingInterval);
-                                }
-
-                                // 写入数据（现在这个方法内部会处理 points 为 null 的情况）
+                                List<Point3d> skeletonPoints = style.IsAnimated ? SampleCurve(path, style.SamplingInterval) : null;
                                 WriteFingerprint(tr, headEnt, style, skeletonPoints);
                             }
                         }
                     }
 
-                    // 3. 打组（保持不变）
                     if (allIds.Count > 1)
                     {
                         DBDictionary gd = (DBDictionary)tr.GetObject(db.GroupDictionaryId, OpenMode.ForWrite);
@@ -491,60 +485,117 @@ namespace Plugin_AnalysisMaster.Services
 
             if (style.PathType == PathCategory.Solid)
             {
-                double step = Math.Max(style.ArrowSize * 0.15, 0.5);
-                int samples = (int)Math.Max(len / step, 100);
-                if (samples > 3000) samples = 3000;
+                // ✨ 检查是否为恒定宽度
+                bool isConstantWidth = Math.Abs(style.StartWidth - style.MidWidth) < 0.001 &&
+                                       Math.Abs(style.MidWidth - style.EndWidth) < 0.001;
+
+                List<Point3d> samplePoints;
+
+                if (!style.IsCurved && isConstantWidth)
+                {
+                    // ✨ 情况 A：折线模式且宽度恒定 -> 直接提取原始顶点（最精简）
+                    using (Polyline plRaw = ConvertToPolyline(curve))
+                    {
+                        samplePoints = new List<Point3d>();
+                        for (int i = 0; i < plRaw.NumberOfVertices; i++)
+                        {
+                            samplePoints.Add(plRaw.GetPoint3dAt(i));
+                        }
+                    }
+                }
+                else
+                {
+                    // ✨ 情况 B：曲线模式或宽度渐变 -> 使用自适应采样（确保顺滑）
+                    samplePoints = SampleCurveAdaptively(curve);
+                }
 
                 using (Polyline pl = new Polyline { Plinegen = true })
                 {
-                    for (int i = 0; i <= samples; i++)
+                    for (int i = 0; i < samplePoints.Count; i++)
                     {
-                        double t = i / (double)samples;
-                        Point3d pt = curve.GetPointAtDist(len * t);
-                        pl.AddVertexAt(i, new Point2d(pt.X, pt.Y), 0, 0, 0);
+                        Point3d pt = samplePoints[i];
+                        double t = curve.GetDistAtPoint(pt) / len;
 
-                        if (i < samples)
-                        {
-                            double startW = CalculateBezierWidth(t, style.StartWidth, style.MidWidth, style.EndWidth);
-                            double endW = CalculateBezierWidth((i + 1.0) / samples, style.StartWidth, style.MidWidth, style.EndWidth);
-                            pl.SetStartWidthAt(i, startW);
-                            pl.SetEndWidthAt(i, endW);
-                        }
+                        // 计算渐变宽度
+                        double w = CalculateBezierWidth(t, style.StartWidth, style.MidWidth, style.EndWidth);
+                        pl.AddVertexAt(i, new Point2d(pt.X, pt.Y), 0, w, w);
                     }
-                    // ✨ 修改：传入 curve 以便 AddToDb 记录采样点
                     ids.Add(AddToDb(btr, tr, pl, style, null));
                 }
             }
             else if (style.PathType == PathCategory.Pattern)
             {
+                // 导入所需的图块资源
                 ObjectId blockId1 = GetOrImportBlock(style.SelectedBlockName, btr.Database, tr);
                 ObjectId blockId2 = style.IsComposite ? GetOrImportBlock(style.SelectedBlockName2, btr.Database, tr) : blockId1;
+
                 if (blockId1.IsNull) return;
 
                 double spacing = style.PatternSpacing;
-                if (spacing <= 0.001) spacing = 10.0;
+                if (spacing <= 0.001) spacing = 10.0; // 防止间距过小导致死循环
 
                 int count = (int)(len / spacing) + 1;
+                // 计算边距使阵列居中分布
                 double margin = (len - (count - 1) * spacing) / 2.0;
 
                 for (int i = 0; i < count; i++)
                 {
                     double currentDist = Math.Max(0, Math.Min(len, margin + (i * spacing)));
+
+                    // 处理组合模式：奇数位使用备用图块
                     ObjectId currentBlockId = (i % 2 != 0 && style.IsComposite) ? blockId2 : blockId1;
                     if (currentBlockId.IsNull) currentBlockId = blockId1;
 
                     Point3d pt = curve.GetPointAtDist(currentDist);
+                    // 计算切线方向以确定图块旋转角度
                     Vector3d tan = curve.GetFirstDerivative(curve.GetParameterAtDistance(currentDist)).GetNormal();
 
                     using (BlockReference br = new BlockReference(pt, currentBlockId))
                     {
                         br.Rotation = Math.Atan2(tan.Y, tan.X);
                         br.ScaleFactors = new Scale3d(style.PatternScale);
-                        // ✨ 核心修复：此处传 null。不再为每个图块重复采样。
+
+                        // ✨ 核心修复：阵列模式下的子单元传 null，避免重复采样动画点
                         ids.Add(AddToDb(btr, tr, br, style, null));
                     }
                 }
             }
+        }
+        /// <summary>
+        /// 自适应采样：彻底精简直线，仅在弯道处加密。
+        /// 修改说明：移除了 maxDist 限制，防止长直段被切分。
+        /// </summary>
+        private static List<Point3d> SampleCurveAdaptively(Curve curve, double angleToleranceDeg = 0.5)
+        {
+            List<Point3d> pts = new List<Point3d>();
+            double totalLen = curve.GetDistanceAtParameter(curve.EndParam);
+
+            // 基础采样步长
+            double step = Math.Min(totalLen / 100.0, 1.0);
+            double toleranceCos = Math.Cos(angleToleranceDeg * Math.PI / 180.0);
+
+            pts.Add(curve.StartPoint);
+            Point3d lastSavedPt = curve.StartPoint;
+            Vector3d lastSavedDir = curve.GetFirstDerivative(curve.StartParam).GetNormal();
+
+            for (double d = step; d < totalLen; d += step)
+            {
+                Point3d currentPt = curve.GetPointAtDist(d);
+                Vector3d currentDir = curve.GetFirstDerivative(curve.GetParameterAtDistance(d)).GetNormal();
+
+                // ✨ 仅当方向变化超过阈值时才添加点（去掉了距离限制）
+                if (currentDir.DotProduct(lastSavedDir) < toleranceCos)
+                {
+                    pts.Add(currentPt);
+                    lastSavedPt = currentPt;
+                    lastSavedDir = currentDir;
+                }
+            }
+
+            if (pts.Count > 0 && pts.Last().DistanceTo(curve.EndPoint) > 0.001)
+                pts.Add(curve.EndPoint);
+
+            return pts;
         }
         /// <summary>
         /// 动画回放主入口：采用纯命令行交互，解决 UI 弹出框干扰及光标卡顿感。
