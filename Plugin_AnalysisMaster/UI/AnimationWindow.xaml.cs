@@ -88,7 +88,7 @@ namespace Plugin_AnalysisMaster.UI
             InitializeComponent();
             PathListView.ItemsSource = _pathList;
 
-            // ✨ 新增：窗口加载时自动恢复数据
+            // ✨ 窗口加载时自动恢复
             this.Loaded += (s, e) => RestoreSequence();
         }
         /// <summary>
@@ -96,16 +96,43 @@ namespace Plugin_AnalysisMaster.UI
         /// </summary>
         protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
         {
-            e.Cancel = true; // 拦截关闭
-            this.Hide();     // 改为隐藏
-            base.OnClosing(e);
+            e.Cancel = true;
+            this.Hide();
         }
+
+        // 文件：Plugin_AnalysisMaster/UI/AnimationWindow.xaml.cs
 
         private void RestoreSequence()
         {
-            var savedItems = GeometryEngine.LoadSequenceFromDwg();
+            // 1. 从图纸读取基础数据
+            var baseItems = GeometryEngine.LoadSequenceFromDwg();
+            if (baseItems.Count == 0) return;
+
             _pathList.Clear();
-            foreach (var item in savedItems) _pathList.Add(item);
+            // ✨ 解决歧义：显式指定 AutoCAD 的 Application
+            var doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
+            if (doc == null) return;
+
+            using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
+            {
+                foreach (var baseItem in baseItems)
+                {
+                    // 2. 重新获取实体的动画指纹
+                    string fp = GetAnimFingerprint(tr, baseItem.Id, out _);
+                    if (!string.IsNullOrEmpty(fp))
+                    {
+                        Entity ent = tr.GetObject(baseItem.Id, OpenMode.ForRead) as Entity;
+                        // 3. 重建完整的 UI 绑定对象
+                        var fullItem = CreatePathItemFromEntity(tr, ent, fp);
+                        if (fullItem != null)
+                        {
+                            fullItem.GroupNumber = baseItem.GroupNumber; // 恢复保存的组号
+                            _pathList.Add(fullItem);
+                        }
+                    }
+                }
+                tr.Commit();
+            }
         }
         #region 1. 列表操作 (添加、移除、清空)
 
@@ -259,7 +286,6 @@ namespace Plugin_AnalysisMaster.UI
         /// </summary>
         private void RemovePath_Click(object sender, RoutedEventArgs e)
         {
-            // 获取当前 ListView 中选中的所有项
             var selectedItems = PathListView.SelectedItems.Cast<AnimPathItem>().ToList();
             if (selectedItems.Count == 0) return;
 
@@ -268,7 +294,7 @@ namespace Plugin_AnalysisMaster.UI
                 _pathList.Remove(item);
             }
 
-            // ✨ 核心修改：列表发生变化，立即更新 DWG 中的持久化数据
+            // ✨ 核心修复：移除后必须立即保存到图纸，否则下次打开又会从 NOD 恢复
             GeometryEngine.SaveSequenceToDwg(_pathList);
         }
 
@@ -277,10 +303,16 @@ namespace Plugin_AnalysisMaster.UI
             if (MessageBox.Show("确定要清空播放列表吗？", "提示", MessageBoxButton.YesNo) == MessageBoxResult.Yes)
             {
                 _pathList.Clear();
+                // ✨ 核心修复：清空后保存一个空列表到图纸，彻底清除持久化数据
+                GeometryEngine.SaveSequenceToDwg(_pathList);
             }
         }
+        private void GroupNumber_LostFocus(object sender, RoutedEventArgs e)
+        {
+            // 用户修改完组号并点击别处后，自动保存
+            GeometryEngine.SaveSequenceToDwg(_pathList);
+        }
 
-        // 文件：AnimationWindow.xaml.cs
 
         /// <summary>
         /// 根据实体和指纹数据创建列表项对象。

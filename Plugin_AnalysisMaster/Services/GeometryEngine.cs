@@ -65,12 +65,13 @@ namespace Plugin_AnalysisMaster.Services
         }
 
         /// <summary>
-        /// 从 DWG 文件中加载之前保存的动画序列。
+        /// 完善后的加载逻辑。
+        /// 修改说明：将原本空的注释块替换为真实的句柄找回逻辑。
         /// </summary>
         public static List<AnimPathItem> LoadSequenceFromDwg()
         {
             List<AnimPathItem> items = new List<AnimPathItem>();
-            Document doc = Application.DocumentManager.MdiActiveDocument;
+            var doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
             if (doc == null) return items;
 
             using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
@@ -89,14 +90,13 @@ namespace Plugin_AnalysisMaster.Services
                         string handleStr = arr[i].Value.ToString();
                         int groupNum = (int)arr[i + 1].Value;
 
-                        // 通过句柄找回 ObjectId
+                        // ✨ 核心修复：通过永久句柄找回当前的 ObjectId
                         if (doc.Database.TryGetObjectId(new Handle(Convert.ToInt64(handleStr, 16)), out ObjectId id))
                         {
-                            // 校验实体是否存在且是否包含动画数据
-                            if (!id.IsErased && id.IsValid)
+                            if (id.IsValid && !id.IsErased)
                             {
-                                // 重新构建 AnimPathItem (这里可以复用之前的 CreatePathItemFromEntity 逻辑)
-                                // 注意：此处需要调用之前定义的 GetAnimFingerprint 进行数据还原
+                                // 先存入基础数据，由 UI 层在 Restore 时补全样式
+                                items.Add(new AnimPathItem { Id = id, GroupNumber = groupNum });
                             }
                         }
                     }

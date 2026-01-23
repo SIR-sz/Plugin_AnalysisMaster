@@ -25,6 +25,7 @@ namespace Plugin_AnalysisMaster
         public string IconCode => "\uE81C";      // 使用路径图标
         public string Description => "专业级动线、箭头与分析线绘制工具";
         public string Category { get; set; } = "绘图增强";
+
         [CommandMethod("OpenAnimationManager")]
         public void OpenAnimationManager()
         {

@@ -169,7 +169,11 @@
                         <GridViewColumn Header="组" Width="45">
                             <GridViewColumn.CellTemplate>
                                 <DataTemplate>
-                                    <TextBox Text="{Binding GroupNumber, UpdateSourceTrigger=PropertyChanged}" Style="{StaticResource DarkInputStyle}" Width="30" TextAlignment="Center"/>
+                                    <TextBox Text="{Binding GroupNumber, UpdateSourceTrigger=PropertyChanged}" 
+             LostFocus="GroupNumber_LostFocus" 
+             Style="{StaticResource DarkInputStyle}" 
+             Width="30" 
+             TextAlignment="Center"/>
                                 </DataTemplate>
                             </GridViewColumn.CellTemplate>
                         </GridViewColumn>
