@@ -196,9 +196,9 @@
 
                 <DockPanel Margin="0,5">
                     <TextBlock Text="播放速度: " VerticalAlignment="Center"/>
-                    <TextBox DockPanel.Dock="Right" Text="{Binding ElementName=SpeedSlider, Path=Value, StringFormat={}{0:F0}x}" 
-                             Style="{StaticResource DarkInputStyle}" Width="45" Margin="10,0,0,0" TextAlignment="Right"/>
-                    <Slider x:Name="SpeedSlider" Minimum="1" Maximum="20" Value="1" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center"/>
+                    <TextBox DockPanel.Dock="Right" Text="{Binding ElementName=SpeedSlider, Path=Value, StringFormat={}{0:F1}x}" 
+             Style="{StaticResource DarkInputStyle}" Width="45" Margin="10,0,0,0" TextAlignment="Right"/>
+                    <Slider x:Name="SpeedSlider" Minimum="0.1" Maximum="10" Value="1" TickFrequency="0.1" IsSnapToTickEnabled="True" VerticalAlignment="Center"/>
                 </DockPanel>
             </StackPanel>
 

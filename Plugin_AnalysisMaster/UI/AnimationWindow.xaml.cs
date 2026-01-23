@@ -43,6 +43,10 @@ namespace Plugin_AnalysisMaster.UI
 
         #region 1. 列表操作 (添加、移除、清空)
 
+        /// <summary>
+        /// 添加路径按钮点击事件。
+        /// 修改说明：将去重逻辑由“指纹识别”改为“实体 ID (ObjectId) 识别”，从而支持将样式完全相同的不同线条同时添加到列表中。
+        /// </summary>
         private void AddPath_Click(object sender, RoutedEventArgs e)
         {
             Document doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
@@ -57,25 +61,23 @@ namespace Plugin_AnalysisMaster.UI
 
                 using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
                 {
-                    // 用于过滤本次选择中重复的组或物体
+                    // ✨ 修改：改用 ObjectId 字符串作为本次选择的去重 key
                     HashSet<string> processedInThisBatch = new HashSet<string>();
                     int addedCount = 0;
 
-                    // 修改位置：AnimationWindow.xaml.cs -> AddPath_Click 内部循环 (约 76 行)
                     foreach (SelectedObject selObj in res.Value)
                     {
                         ObjectId actualDataHolder;
-                        // ✨ 调用新版方法，获取 actualDataHolder
                         string fingerprint = GetAnimFingerprint(tr, selObj.ObjectId, out actualDataHolder);
 
                         if (string.IsNullOrEmpty(fingerprint)) continue;
 
-                        if (processedInThisBatch.Contains(fingerprint) || IsFingerprintAlreadyExists(tr, fingerprint))
+                        // ✨ 核心修改：检查实体 ID 是否已在列表中，而不是检查样式是否重复
+                        if (processedInThisBatch.Contains(actualDataHolder.ToString()) || IsPathAlreadyExists(actualDataHolder))
                             continue;
 
-                        processedInThisBatch.Add(fingerprint);
+                        processedInThisBatch.Add(actualDataHolder.ToString());
 
-                        // ✨ 关键修复：使用持有数据的实体来创建列表项
                         Entity ent = tr.GetObject(actualDataHolder, OpenMode.ForRead) as Entity;
                         var item = CreatePathItemFromEntity(tr, ent, fingerprint);
                         if (item != null)
@@ -94,19 +96,14 @@ namespace Plugin_AnalysisMaster.UI
             }
         }
 
-        // 辅助方法：检查列表中是否已存在该指纹
-        // 修改位置：AnimationWindow.xaml.cs 约第 101 行
-        private bool IsFingerprintAlreadyExists(Transaction tr, string fingerprint)
+        /// <summary>
+        /// 辅助方法：检查列表中是否已存在指定的实体。
+        /// 修改说明：原名为 IsFingerprintAlreadyExists，现根据 ID 检查唯一性，确保不重复添加同一个实体。
+        /// </summary>
+        private bool IsPathAlreadyExists(ObjectId id)
         {
-            foreach (var item in _pathList)
-            {
-                // ✨ 修复 CS7036 错误：
-                // 因为 GetAnimFingerprint 现在需要 3 个参数，这里使用 "out _" 来忽略掉不需要的 dataHolderId
-                string existingFingerprint = GetAnimFingerprint(tr, item.Id, out _);
-
-                if (existingFingerprint == fingerprint) return true;
-            }
-            return false;
+            // 直接在 ObservableCollection 中查找是否存在相同的 ObjectId
+            return _pathList.Any(x => x.Id == id);
         }
 
         // 辅助方法：获取实体的动画指纹
@@ -190,34 +187,41 @@ namespace Plugin_AnalysisMaster.UI
 
         // 文件：AnimationWindow.xaml.cs
 
+        /// <summary>
+        /// 根据实体和指纹数据创建列表项对象。
+        /// 修改说明：
+        /// 1. 移除了图层显示：不再使用 "图层: LayerName" 格式。
+        /// 2. 描述同步图例：解析指纹数据，根据 PathType 生成“连续线样式”或“阵列样式(图块名)”描述。
+        /// </summary>
         private AnimPathItem CreatePathItemFromEntity(Transaction tr, Entity ent, string fingerprint)
         {
-            string layerName = ent.Layer;
-
             string[] parts = fingerprint.Split('|');
-
-            // ✨ 核心修复：索引从 4 改为 5
-            // 现在的顺序：0:PathType | 1:IsCurved | 2:Block1 | 3:Block2 | 4:IsComposite | 5:Color | ...
-            if (parts.Length < 6) return null; // 基础安全检查
-
-            string colorStr = parts[5];
+            if (parts.Length < 6) return null;
 
             try
             {
+                // ✨ 解析样式描述（同步 GeometryEngine.GenerateLegend 的逻辑）
+                var pathType = parts[0]; // PathCategory 字符串
+                var blockName = parts[2]; // SelectedBlockName
+
+                string description = (pathType == "Solid")
+                    ? "连续线样式"
+                    : $"阵列样式({(string.IsNullOrEmpty(blockName) ? "默认" : blockName)})";
+
+                var colorStr = parts[5];
                 var mediaColor = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(colorStr);
 
                 return new AnimPathItem
                 {
                     Id = ent.ObjectId,
-                    Name = $"图层: {layerName}",
+                    Name = description, // ✨ 使用新的描述逻辑
                     PathColor = mediaColor,
                     GroupNumber = 1
                 };
             }
             catch
             {
-                // 如果解析失败（旧数据），可以给一个默认颜色，防止程序直接崩溃
-                return new AnimPathItem { Id = ent.ObjectId, Name = $"图层: {layerName}", PathColor = Colors.SteelBlue, GroupNumber = 1 };
+                return new AnimPathItem { Id = ent.ObjectId, Name = "未知样式", PathColor = Colors.SteelBlue, GroupNumber = 1 };
             }
         }
 
@@ -225,6 +229,11 @@ namespace Plugin_AnalysisMaster.UI
 
         #region 2. 播放控制
 
+        /// <summary>
+        /// 播放按钮点击事件处理逻辑。
+        /// 修改说明：将 speed 的变量类型从 int 改为 double，以支持 0.1 - 10 倍速的浮点数调节，
+        /// 并同步修改了传给 GeometryEngine.PlaySequenceAsync 的参数类型。
+        /// </summary>
         private async void BtnPlay_Click(object sender, RoutedEventArgs e)
         {
             if (_pathList.Count == 0) return;
@@ -236,14 +245,15 @@ namespace Plugin_AnalysisMaster.UI
             try
             {
                 double thickness = ThicknessSlider.Value;
-                int speed = (int)SpeedSlider.Value; // 获取倍速 (1-20)
+                // ✨ 修改：由 (int) 改为直接获取 double 值
+                double speed = SpeedSlider.Value;
                 bool isLoop = LoopCheck.IsChecked == true;
                 bool isPersistent = PersistenceCheck.IsChecked == true;
 
                 await GeometryEngine.PlaySequenceAsync(
                     _pathList.ToList(),
                     thickness,
-                    speed, // 传入倍速
+                    speed, // 传入 double 类型倍速
                     isLoop,
                     isPersistent,
                     _cts.Token);

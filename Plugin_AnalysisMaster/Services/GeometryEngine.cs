@@ -84,43 +84,62 @@ namespace Plugin_AnalysisMaster.Services
             _labelTransients.Clear();
         }
         /// <summary>
-        /// 高亮/取消高亮指定路径及其所在的编组
+        /// 高亮或取消高亮指定的实体路径及其所在的编组。
+        /// 修改说明：
+        /// 1. 增加了 doc.LockDocument()：确保非模态窗口交互的稳定性。
+        /// 2. 引入了 Utils.FlushGraphics()：这是解决“刷新延迟”的关键，强制 AutoCAD 立即将图形更改推送到屏幕，无需点击 CAD 窗口。
+        /// 3. 显式调用 ed.UpdateScreen()：确保视口状态同步。
         /// </summary>
         public static void HighlightPath(ObjectId id, bool highlight)
         {
             if (id.IsNull || !id.IsValid) return;
 
             Document doc = Application.DocumentManager.MdiActiveDocument;
-            using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
-            {
-                Entity ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
-                if (ent == null) return;
+            if (doc == null) return;
+            Editor ed = doc.Editor;
 
-                // 获取编组内所有成员进行同步高亮
-                HashSet<ObjectId> idsToHighlight = new HashSet<ObjectId> { id };
-                ObjectIdCollection reactors = ent.GetPersistentReactorIds();
-                if (reactors != null)
+            using (doc.LockDocument())
+            {
+                using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
                 {
-                    foreach (ObjectId rId in reactors)
+                    Entity ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
+                    if (ent == null) return;
+
+                    // 获取编组内所有成员进行同步高亮
+                    HashSet<ObjectId> idsToHighlight = new HashSet<ObjectId> { id };
+                    ObjectIdCollection reactors = ent.GetPersistentReactorIds();
+                    if (reactors != null)
                     {
-                        if (rId.ObjectClass.IsDerivedFrom(RXClass.GetClass(typeof(Group))))
+                        foreach (ObjectId rId in reactors)
                         {
-                            Group gp = tr.GetObject(rId, OpenMode.ForRead) as Group;
-                            if (gp != null) foreach (ObjectId mId in gp.GetAllEntityIds()) idsToHighlight.Add(mId);
+                            if (rId.IsValid && rId.ObjectClass.IsDerivedFrom(RXClass.GetClass(typeof(Group))))
+                            {
+                                Group gp = tr.GetObject(rId, OpenMode.ForRead) as Group;
+                                if (gp != null)
+                                {
+                                    foreach (ObjectId mId in gp.GetAllEntityIds())
+                                        idsToHighlight.Add(mId);
+                                }
+                            }
                         }
                     }
+
+                    // 执行高亮操作
+                    foreach (ObjectId hId in idsToHighlight)
+                    {
+                        Entity target = tr.GetObject(hId, OpenMode.ForRead) as Entity;
+                        if (target != null)
+                        {
+                            if (highlight) target.Highlight();
+                            else target.Unhighlight();
+                        }
+                    }
+                    tr.Commit();
                 }
 
-                foreach (ObjectId hId in idsToHighlight)
-                {
-                    Entity target = tr.GetObject(hId, OpenMode.ForRead) as Entity;
-                    if (target != null)
-                    {
-                        if (highlight) target.Highlight();
-                        else target.Unhighlight();
-                    }
-                }
-                tr.Commit();
+                // ✨ 核心修复：强制刷新图形缓冲区并更新屏幕，解决点击列表切换不及时的问题
+                Autodesk.AutoCAD.Internal.Utils.FlushGraphics();
+                ed.UpdateScreen();
             }
         }
         private class PathPlaybackData
@@ -134,13 +153,15 @@ namespace Plugin_AnalysisMaster.Services
 
         /// <summary>
         /// 异步播放序列逻辑
+        /// 修改说明：
+        /// 1. 参数 speedMultiplier 类型由 int 改为 double。
+        /// 2. 内部循环变量 currentStep 改为 double，并通过 (int)currentStep 进行采样索引计算。
+        /// 3. 这样当倍率小于 1.0 时（如 0.1），循环会经过多次累加才会增加一个整数索引，从而实现平滑的减速生长效果。
         /// </summary>
-        // 位置：GeometryEngine.cs 约第 40 行
-        // 修改位置：GeometryEngine.cs -> PlaySequenceAsync
         public static async Task PlaySequenceAsync(
               List<AnimPathItem> items,
               double thickness,
-              int speedMultiplier,
+              double speedMultiplier, // ✨ 修改为 double
               bool isLoop,
               bool isPersistent,
               CancellationToken token)
@@ -169,7 +190,7 @@ namespace Plugin_AnalysisMaster.Services
             {
                 do
                 {
-                    // A. 隐藏所有原始实体（包括阵列单元）
+                    // A. 隐藏所有原始实体
                     ToggleEntitiesVisibility(items.Select(i => i.Id), false);
 
                     var groupedData = items
@@ -192,18 +213,16 @@ namespace Plugin_AnalysisMaster.Services
                             Polyline pl = new Polyline { Plinegen = true };
                             pl.Color = path.data.Color;
                             pl.Layer = path.data.Layer;
-
-                            // ✨ 修改：在添加第一个点时就传入 thickness
                             pl.AddVertexAt(0, new Point2d(path.data.Points[0].X, path.data.Points[0].Y), 0, thickness, thickness);
-
-                            pl.ConstantWidth = thickness; // 保持全局宽度设置
+                            pl.ConstantWidth = thickness;
                             TransientManager.CurrentTransientManager.AddTransient(pl, TransientDrawingMode.DirectTopmost, 128, vps);
                             currentGroupLines.Add(pl);
                             activeTransients.Add(pl);
                         }
 
                         // C. 引导线生长循环
-                        for (int currentStep = speedMultiplier; ; currentStep += speedMultiplier)
+                        // ✨ 修改：currentStep 改为 double 以支持非整数倍率步进
+                        for (double currentStep = speedMultiplier; ; currentStep += speedMultiplier)
                         {
                             if (token.IsCancellationRequested) return;
                             bool allFinished = true;
@@ -214,15 +233,12 @@ namespace Plugin_AnalysisMaster.Services
                                 var pl = currentGroupLines[i];
                                 if (lastAddedIndices[i] >= data.Points.Count - 1) continue;
 
-                                int nextPtIdx = Math.Min(currentStep, data.Points.Count - 1);
+                                // ✨ 修改：通过强转 int 获取当前步进所在的点位索引
+                                int nextPtIdx = Math.Min((int)currentStep, data.Points.Count - 1);
                                 if (nextPtIdx > lastAddedIndices[i])
                                 {
                                     int vtxIdx = pl.NumberOfVertices;
-
-                                    // ✨ 核心修复：将 0, 0 改为 thickness, thickness
-                                    // 确保后续生长的每一段线段都继承用户设置的加粗宽度
                                     pl.AddVertexAt(vtxIdx, new Point2d(data.Points[nextPtIdx].X, data.Points[nextPtIdx].Y), 0, thickness, thickness);
-
                                     lastAddedIndices[i] = nextPtIdx;
                                     TransientManager.CurrentTransientManager.UpdateTransient(pl, vps);
                                 }
@@ -234,11 +250,9 @@ namespace Plugin_AnalysisMaster.Services
                             if (allFinished) break;
                         }
 
-                        // ✨ D. 简化核心：本组引导线长完后，立即显示该组对应的所有原始单元
-                        // 这里的 ToggleEntitiesVisibility 会通过组关联自动显示所有阵列块
+                        // D. 恢复本组原始单元
                         ToggleEntitiesVisibility(groupPaths.Select(p => p.item.Id), isPersistent);
 
-                        // 此时可以移除当前组的引导线，防止重叠
                         foreach (var pl in currentGroupLines)
                         {
                             TransientManager.CurrentTransientManager.EraseTransient(pl, vps);
@@ -253,11 +267,7 @@ namespace Plugin_AnalysisMaster.Services
             finally
             {
                 ClearTransients(activeTransients, vps);
-
-                // ✨ 修复：根据 isPersistent 参数决定是否恢复所有选中路径的可见性
-                // 如果不勾选（false），则播放完后实体将保持隐藏状态
                 ToggleEntitiesVisibility(items.Select(i => i.Id), isPersistent);
-
                 ed.UpdateScreen();
             }
         }
