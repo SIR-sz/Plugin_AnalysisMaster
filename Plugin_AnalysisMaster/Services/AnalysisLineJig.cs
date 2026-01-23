@@ -32,7 +32,11 @@ namespace Plugin_AnalysisMaster.Services
         public Point3dCollection GetPoints() => _pts;
 
         /// <summary>
-        /// 采样逻辑：捕捉鼠标移动并更新临时点
+        /// 采样逻辑：捕捉鼠标移动并更新临时点。
+        /// 修改说明：
+        /// 1. 增加了对 ppr.Status 的严格判定。只有在 PromptStatus.OK（即用户明确移动或点击）时才更新临时点。
+        /// 2. 解决了“连接到原点”的 Bug：当用户按下回车或右键结束（Status 为 None）时，直接返回 Cancel 结束采样，
+        ///    不再执行 _tempPt = ppr.Value，从而避免了将鼠标位置错误识别为坐标原点 (0,0,0) 的问题。
         /// </summary>
         protected override SamplerStatus Sampler(JigPrompts prompts)
         {
@@ -41,14 +45,23 @@ namespace Plugin_AnalysisMaster.Services
                                      UserInputControls.NullResponseAccepted |
                                      UserInputControls.AnyBlankTerminatesInput;
 
+            if (_pts.Count > 0)
+            {
+                jppo.BasePoint = _pts[_pts.Count - 1];
+                jppo.UseBasePoint = true;
+            }
+
             PromptPointResult ppr = prompts.AcquirePoint(jppo);
 
-            if (ppr.Status == PromptStatus.Cancel) return SamplerStatus.Cancel;
+            // ✨ 核心修复：如果状态不是 OK（如用户按回车结束、右键或取消），直接停止采样，不更新临时点
+            if (ppr.Status != PromptStatus.OK)
+                return SamplerStatus.Cancel;
 
             // 距离太近不刷新，防止画面抖动
             if (ppr.Value.DistanceTo(_tempPt) < 0.001)
                 return SamplerStatus.NoChange;
 
+            // ✨ 只有在 OK 状态下才更新点位
             _tempPt = ppr.Value;
             return SamplerStatus.OK;
         }

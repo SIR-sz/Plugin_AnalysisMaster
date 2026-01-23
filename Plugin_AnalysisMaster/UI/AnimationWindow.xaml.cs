@@ -22,7 +22,55 @@ namespace Plugin_AnalysisMaster.UI
         private ObservableCollection<AnimPathItem> _pathList = new ObservableCollection<AnimPathItem>();
         private CancellationTokenSource _cts;
         // 在 AnimationWindow 类中添加以下方法
+        /// <summary>
+        /// 当窗口失去焦点（例如用户点击了 AutoCAD 绘图区或其他窗口）时触发。
+        /// 作用：自动取消当前列表的选中状态并擦除屏幕上的高亮骨架线，确保“去忙别的”时图形自动清理。
+        /// </summary>
+        private void Window_Deactivated(object sender, EventArgs e)
+        {
+            // 强制取消选中并清理高亮
+            if (PathListView != null)
+            {
+                PathListView.SelectedItem = null;
+            }
+            GeometryEngine.ClearHighlightTransient();
+        }
+        /// <summary>
+        /// 在 ListView 内部按下鼠标时的预览处理。
+        /// 作用：通过 VisualTreeHelper 判定点击位置。如果点击的是列表内的空白处（没有点击到行），则执行取消选中。
+        /// </summary>
+        private void PathListView_PreviewMouseDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            // 检查点击的目标是否属于 ListViewItem（即具体的行）
+            DependencyObject dep = (DependencyObject)e.OriginalSource;
+            while (dep != null && !(dep is ListViewItem))
+            {
+                dep = VisualTreeHelper.GetParent(dep);
+            }
 
+            // 如果 dep 为 null，说明点击的是列表背景空白处
+            if (dep == null)
+            {
+                PathListView.SelectedItem = null;
+                GeometryEngine.ClearHighlightTransient();
+            }
+        }
+        /// <summary>
+        /// 窗口根级容器的鼠标按下预览。
+        /// 作用：实现“点击窗口内非列表区域（如按钮边距、标题栏空白处等）”即取消高亮的逻辑。
+        /// </summary>
+        private void RootBorder_PreviewMouseLeftButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            // 检查点击点是否在 ListView 控件的几何范围之内
+            var hitTestResult = VisualTreeHelper.HitTest(PathListView, e.GetPosition(PathListView));
+
+            // 如果点击点完全不在 ListView 内部（例如点击了窗口侧边空白或按钮间隔），则取消选中
+            if (hitTestResult == null)
+            {
+                PathListView.SelectedItem = null;
+                GeometryEngine.ClearHighlightTransient();
+            }
+        }
         private void TitleBar_MouseLeftButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
         {
             if (e.LeftButton == System.Windows.Input.MouseButtonState.Pressed)
