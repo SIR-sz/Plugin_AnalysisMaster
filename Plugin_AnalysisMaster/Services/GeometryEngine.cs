@@ -20,6 +20,9 @@ namespace Plugin_AnalysisMaster.Services
 {
     public static class GeometryEngine
     {
+        // --- 新增静态变量用于管理高亮瞬态对象 ---
+        private static Polyline _currentHighlightLine = null;
+        private static IntegerCollection _highlightVps = new IntegerCollection();
         // ✨ 顶部增加一个静态列表，用于管理序号标签
         private static List<DBObject> _labelTransients = new List<DBObject>();
         private static IntegerCollection _labelVps = new IntegerCollection();
@@ -84,62 +87,56 @@ namespace Plugin_AnalysisMaster.Services
             _labelTransients.Clear();
         }
         /// <summary>
-        /// 高亮或取消高亮指定的实体路径及其所在的编组。
+        /// 使用瞬态骨架线代替实体高亮。
         /// 修改说明：
-        /// 1. 增加了 doc.LockDocument()：确保非模态窗口交互的稳定性。
-        /// 2. 引入了 Utils.FlushGraphics()：这是解决“刷新延迟”的关键，强制 AutoCAD 立即将图形更改推送到屏幕，无需点击 CAD 窗口。
-        /// 3. 显式调用 ed.UpdateScreen()：确保视口状态同步。
+        /// 1. 强制在绘制后执行 FlushGraphics() 和 UpdateScreen()，确保高亮线在列表切换时立即呈现，无需点击 CAD 窗口。
+        /// 2. 优化了切换逻辑，每次生成新线前都会彻底清理显存。
         /// </summary>
         public static void HighlightPath(ObjectId id, bool highlight)
         {
-            if (id.IsNull || !id.IsValid) return;
+            // ✨ 核心逻辑：无论是否高亮，首先执行彻底清理
+            ClearHighlightTransient();
+
+            if (!highlight || id.IsNull || !id.IsValid) return;
 
             Document doc = Application.DocumentManager.MdiActiveDocument;
             if (doc == null) return;
             Editor ed = doc.Editor;
 
             using (doc.LockDocument())
+            using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
             {
-                using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
+                var data = FetchPathData(tr, id);
+                if (data == null || data.Points.Count < 2) return;
+
+                _currentHighlightLine = new Polyline();
+                for (int i = 0; i < data.Points.Count; i++)
                 {
-                    Entity ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
-                    if (ent == null) return;
-
-                    // 获取编组内所有成员进行同步高亮
-                    HashSet<ObjectId> idsToHighlight = new HashSet<ObjectId> { id };
-                    ObjectIdCollection reactors = ent.GetPersistentReactorIds();
-                    if (reactors != null)
-                    {
-                        foreach (ObjectId rId in reactors)
-                        {
-                            if (rId.IsValid && rId.ObjectClass.IsDerivedFrom(RXClass.GetClass(typeof(Group))))
-                            {
-                                Group gp = tr.GetObject(rId, OpenMode.ForRead) as Group;
-                                if (gp != null)
-                                {
-                                    foreach (ObjectId mId in gp.GetAllEntityIds())
-                                        idsToHighlight.Add(mId);
-                                }
-                            }
-                        }
-                    }
-
-                    // 执行高亮操作
-                    foreach (ObjectId hId in idsToHighlight)
-                    {
-                        Entity target = tr.GetObject(hId, OpenMode.ForRead) as Entity;
-                        if (target != null)
-                        {
-                            if (highlight) target.Highlight();
-                            else target.Unhighlight();
-                        }
-                    }
-                    tr.Commit();
+                    _currentHighlightLine.AddVertexAt(i, new Point2d(data.Points[i].X, data.Points[i].Y), 0, 0, 0);
                 }
 
-                // ✨ 核心修复：强制刷新图形缓冲区并更新屏幕，解决点击列表切换不及时的问题
-                Autodesk.AutoCAD.Internal.Utils.FlushGraphics();
-                ed.UpdateScreen();
+                _currentHighlightLine.ColorIndex = 2; // 黄色
+                _currentHighlightLine.ConstantWidth = 0.8;
+
+                TransientManager.CurrentTransientManager.AddTransient(_currentHighlightLine, TransientDrawingMode.DirectTopmost, 128, _highlightVps);
+                tr.Commit();
+            }
+
+            // ✨ 核心修复：强制推送显存刷新，解决切换延迟
+            Autodesk.AutoCAD.Internal.Utils.FlushGraphics();
+            ed.UpdateScreen();
+        }
+        /// <summary>
+        /// 清理当前屏幕上的高亮瞬态线条。
+        /// 作用：在切换路径选择或关闭窗口时，确保内存中的临时图形被正确擦除。
+        /// </summary>
+        public static void ClearHighlightTransient()
+        {
+            if (_currentHighlightLine != null)
+            {
+                TransientManager.CurrentTransientManager.EraseTransient(_currentHighlightLine, _highlightVps);
+                _currentHighlightLine.Dispose();
+                _currentHighlightLine = null;
             }
         }
         private class PathPlaybackData

@@ -286,29 +286,38 @@ namespace Plugin_AnalysisMaster.UI
 
         // 2. 列表选中高亮逻辑
         private ObjectId _lastSelectedId = ObjectId.Null;
+        /// <summary>
+        /// 列表选中项变更事件处理。
+        /// 修改说明：简化了逻辑，移除了对 _lastSelectedId 的依赖。
+        /// 现在由 GeometryEngine 内部处理“先清理、后绘制”的逻辑，确保了切换的流畅性和准确性。
+        /// </summary>
         private void PathListView_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
-            // A. 取消之前的高亮
-            if (!_lastSelectedId.IsNull)
-            {
-                GeometryEngine.HighlightPath(_lastSelectedId, false);
-            }
-
+            // 如果选中了有效条目
             if (PathListView.SelectedItem is AnimPathItem item)
             {
-                // B. 高亮当前选中项
+                // 直接触发高亮（内部会自动先清理旧线）
                 GeometryEngine.HighlightPath(item.Id, true);
-                _lastSelectedId = item.Id;
             }
             else
             {
-                _lastSelectedId = ObjectId.Null;
+                // ✨ 核心修复：如果用户点击空白处取消了选中，确保立即擦除屏幕上的高亮线
+                GeometryEngine.ClearHighlightTransient();
             }
         }
         // 3. 确保窗口关闭时清理标签
+        /// <summary>
+        /// 确保窗口关闭时清理所有瞬态图形（包括路径编号和高亮线条）。
+        /// 修改说明：增加了对 ClearHighlightTransient 的调用，防止关闭动画管理窗口后，高亮骨架线残留在图中。
+        /// </summary>
         protected override void OnClosed(EventArgs e)
         {
+            // 清理路径编号标签
             GeometryEngine.ClearPathLabels();
+
+            // ✨ 新增：清理高亮瞬态骨架线
+            GeometryEngine.ClearHighlightTransient();
+
             base.OnClosed(e);
         }
         private void ShowNumberTip(ObjectId id, int index)
