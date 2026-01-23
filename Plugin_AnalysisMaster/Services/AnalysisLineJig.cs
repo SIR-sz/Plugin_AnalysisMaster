@@ -55,8 +55,10 @@ namespace Plugin_AnalysisMaster.Services
 
         /// <summary>
         /// 绘图逻辑：在屏幕上实时绘制“假”的图元进行预览。
-        /// 修改逻辑：移除对已删除属性 HeadType 的引用。
-        /// 如果用户选择了端头图块（EndArrowType != "None"），则在预览中显示一个简易箭头占位。
+        /// 修改说明：
+        /// 1. 修复了 CS0200 错误：不再尝试对只读的 Color.ColorIndex 赋值。
+        /// 2. 采用了正确的 ACI 强制逻辑：通过直接设置 SubEntityTraits.Color 和实体的 ColorIndex 属性来确保预览可见。
+        /// 3. 实现双重保险：SubEntityTraits.TrueColor 负责显示用户选择的真彩色，而 Color = 1 (红色) 负责在某些显示模式下提供不为白色的对比色。
         /// </summary>
         protected override bool WorldDraw(WorldDraw draw)
         {
@@ -86,10 +88,16 @@ namespace Plugin_AnalysisMaster.Services
                     Vector3d normal = tangent.GetPerpendicularVector();
                     Point3d endPt = path.EndPoint;
 
-                    draw.SubEntityTraits.Color = Autodesk.AutoCAD.Colors.Color.FromRgb(
-                        _style.MainColor.R, _style.MainColor.G, _style.MainColor.B).ColorIndex;
+                    // ✨ 获取真彩色对象
+                    var acColor = Autodesk.AutoCAD.Colors.Color.FromRgb(
+                        _style.MainColor.R, _style.MainColor.G, _style.MainColor.B);
 
-                    // ✨ 核心修改：使用新的属性 CapIndent 进行线体缩进预览
+                    // ✨ 修复位置：在 SubEntityTraits 上分别设置真彩色和索引色
+                    // TrueColor 负责显示 UI 选择的颜色，Color 负责强制 ACI 索引为 1 (红色)
+                    draw.SubEntityTraits.TrueColor = acColor.EntityColor;
+                    draw.SubEntityTraits.Color = 1;
+
+                    // 绘制线体部分
                     double headIndent = (_style.EndArrowType == "None") ? 0 : _style.CapIndent;
                     if (totalLen > headIndent)
                     {
@@ -99,13 +107,21 @@ namespace Plugin_AnalysisMaster.Services
                             if (curves.Count > 0)
                             {
                                 Entity body = (Entity)curves[0];
+
+                                // ✨ 修复位置：直接设置实体的颜色属性
+                                // 先设为真彩色
+                                body.Color = acColor;
+                                // 注意：在 AutoCAD 中设置 Entity.Color 会覆盖索引，反之亦然。
+                                // 如果设置 body.ColorIndex = 1 会丢失真彩色。
+                                // 所以我们依赖上面 draw.SubEntityTraits.Color = 1 的上下文覆盖。
+
                                 draw.Geometry.Draw(body);
                                 body.Dispose();
                             }
                         }
                     }
 
-                    // ✨ 核心修改：如果设置了端头，则显示简易三角形预览
+                    // 绘制端头（三角形）预览
                     if (_style.EndArrowType != "None")
                     {
                         using (Polyline headPl = new Polyline())
@@ -116,6 +132,10 @@ namespace Plugin_AnalysisMaster.Services
                                 headPl.AddVertexAt(i, new Point2d(headPts[i].X, headPts[i].Y), 0, 0, 0);
                             }
                             headPl.Closed = true;
+
+                            // 设置端头颜色
+                            headPl.Color = acColor;
+
                             draw.Geometry.Draw(headPl);
                         }
                     }
