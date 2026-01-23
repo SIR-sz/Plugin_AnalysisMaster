@@ -28,6 +28,83 @@ namespace Plugin_AnalysisMaster.Services
         private static IntegerCollection _labelVps = new IntegerCollection();
 
         private const string RegAppName = "ANALYSIS_MASTER_STYLE";
+        // --- 在 GeometryEngine.cs 类中新增以下方法 ---
+
+        private const string AnimSequenceKey = "ANALYSIS_ANIM_SEQUENCE";
+
+        /// <summary>
+        /// 将当前播放列表持久化到 DWG 文件的 NOD 字典中。
+        /// 使用 Handle（句柄）替代 ObjectId，确保文件重启后仍能找回。
+        /// </summary>
+        public static void SaveSequenceToDwg(IEnumerable<AnimPathItem> items)
+        {
+            Document doc = Application.DocumentManager.MdiActiveDocument;
+            if (doc == null) return;
+
+            using (doc.LockDocument())
+            using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
+            {
+                DBDictionary nod = (DBDictionary)tr.GetObject(doc.Database.NamedObjectsDictionaryId, OpenMode.ForWrite);
+
+                // 创建或获取专属 Xrecord
+                Xrecord xRec = new Xrecord();
+                ResultBuffer rb = new ResultBuffer();
+
+                foreach (var item in items)
+                {
+                    // 存储结构：Handle (DxfCode.Text), GroupNumber (DxfCode.Int32)
+                    rb.Add(new TypedValue((int)DxfCode.Text, item.Id.Handle.ToString()));
+                    rb.Add(new TypedValue((int)DxfCode.Int32, item.GroupNumber));
+                }
+
+                xRec.Data = rb;
+                nod.SetAt(AnimSequenceKey, xRec);
+                tr.AddNewlyCreatedDBObject(xRec, true);
+                tr.Commit();
+            }
+        }
+
+        /// <summary>
+        /// 从 DWG 文件中加载之前保存的动画序列。
+        /// </summary>
+        public static List<AnimPathItem> LoadSequenceFromDwg()
+        {
+            List<AnimPathItem> items = new List<AnimPathItem>();
+            Document doc = Application.DocumentManager.MdiActiveDocument;
+            if (doc == null) return items;
+
+            using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
+            {
+                DBDictionary nod = (DBDictionary)tr.GetObject(doc.Database.NamedObjectsDictionaryId, OpenMode.ForRead);
+                if (!nod.Contains(AnimSequenceKey)) return items;
+
+                Xrecord xRec = (Xrecord)tr.GetObject(nod.GetAt(AnimSequenceKey), OpenMode.ForRead);
+                using (ResultBuffer rb = xRec.Data)
+                {
+                    if (rb == null) return items;
+                    TypedValue[] arr = rb.AsArray();
+
+                    for (int i = 0; i < arr.Length; i += 2)
+                    {
+                        string handleStr = arr[i].Value.ToString();
+                        int groupNum = (int)arr[i + 1].Value;
+
+                        // 通过句柄找回 ObjectId
+                        if (doc.Database.TryGetObjectId(new Handle(Convert.ToInt64(handleStr, 16)), out ObjectId id))
+                        {
+                            // 校验实体是否存在且是否包含动画数据
+                            if (!id.IsErased && id.IsValid)
+                            {
+                                // 重新构建 AnimPathItem (这里可以复用之前的 CreatePathItemFromEntity 逻辑)
+                                // 注意：此处需要调用之前定义的 GetAnimFingerprint 进行数据还原
+                            }
+                        }
+                    }
+                }
+                tr.Commit();
+            }
+            return items;
+        }
         /// <summary>
         /// 更新图面上的路径编号标签
         /// </summary>

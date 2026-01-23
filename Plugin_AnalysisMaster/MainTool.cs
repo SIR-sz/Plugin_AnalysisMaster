@@ -15,6 +15,7 @@ namespace Plugin_AnalysisMaster
     /// </summary>
     public class MainTool : ICadTool
     {
+        private static AnimationWindow _animWindow = null;
         // 授权标记：仅在主程序点击 Execute 或 Debug/Standalone 模式下开启
         private static bool _isAuthorized = false;
 
@@ -24,7 +25,18 @@ namespace Plugin_AnalysisMaster
         public string IconCode => "\uE81C";      // 使用路径图标
         public string Description => "专业级动线、箭头与分析线绘制工具";
         public string Category { get; set; } = "绘图增强";
+        [CommandMethod("OpenAnimationManager")]
+        public void OpenAnimationManager()
+        {
+            // 如果窗口不存在或已被完全销毁，则新建
+            if (_animWindow == null || !_animWindow.IsLoaded)
+            {
+                _animWindow = new AnimationWindow();
+            }
 
+            // 显示窗口
+            Application.ShowModelessWindow(_animWindow);
+        }
         // 主程序会自动寻找同名 PNG 并填充此属性
         public ImageSource ToolPreview { get; set; }
 

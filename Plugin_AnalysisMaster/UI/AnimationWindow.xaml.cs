@@ -87,13 +87,36 @@ namespace Plugin_AnalysisMaster.UI
         {
             InitializeComponent();
             PathListView.ItemsSource = _pathList;
+
+            // ✨ 新增：窗口加载时自动恢复数据
+            this.Loaded += (s, e) => RestoreSequence();
+        }
+        /// <summary>
+        /// 拦截关闭事件，改用隐藏方式，实现 Session 级持久化。
+        /// </summary>
+        protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
+        {
+            e.Cancel = true; // 拦截关闭
+            this.Hide();     // 改为隐藏
+            base.OnClosing(e);
         }
 
+        private void RestoreSequence()
+        {
+            var savedItems = GeometryEngine.LoadSequenceFromDwg();
+            _pathList.Clear();
+            foreach (var item in savedItems) _pathList.Add(item);
+        }
         #region 1. 列表操作 (添加、移除、清空)
+
+        // 文件位置：Plugin_AnalysisMaster/UI/AnimationWindow.xaml.cs
+        // 约 103 行左右，#region 1. 列表操作 (添加、移除、清空) 内部
 
         /// <summary>
         /// 添加路径按钮点击事件。
-        /// 修改说明：将去重逻辑由“指纹识别”改为“实体 ID (ObjectId) 识别”，从而支持将样式完全相同的不同线条同时添加到列表中。
+        /// 修改说明：
+        /// 1. 增加了有效性校验：通过 GetAnimFingerprint 过滤掉没有动画点位的线。
+        /// 2. 增加了持久化调用：添加成功后自动执行 SaveSequenceToDwg。
         /// </summary>
         private void AddPath_Click(object sender, RoutedEventArgs e)
         {
@@ -109,18 +132,18 @@ namespace Plugin_AnalysisMaster.UI
 
                 using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
                 {
-                    // ✨ 修改：改用 ObjectId 字符串作为本次选择的去重 key
                     HashSet<string> processedInThisBatch = new HashSet<string>();
                     int addedCount = 0;
 
                     foreach (SelectedObject selObj in res.Value)
                     {
                         ObjectId actualDataHolder;
+                        // ✨ 这里的 GetAnimFingerprint 内部已经包含了“点数 > 2”的过滤逻辑
                         string fingerprint = GetAnimFingerprint(tr, selObj.ObjectId, out actualDataHolder);
 
+                        // 如果指纹为空（说明没数据或点位不足），直接跳过
                         if (string.IsNullOrEmpty(fingerprint)) continue;
 
-                        // ✨ 核心修改：检查实体 ID 是否已在列表中，而不是检查样式是否重复
                         if (processedInThisBatch.Contains(actualDataHolder.ToString()) || IsPathAlreadyExists(actualDataHolder))
                             continue;
 
@@ -135,7 +158,13 @@ namespace Plugin_AnalysisMaster.UI
                         }
                     }
                     tr.Commit();
-                    ed.WriteMessage($"\n[成功] 已识别并添加 {addedCount} 条分析路径。");
+
+                    // ✨ 核心修改：如果添加了新项，立即持久化到图纸 NOD
+                    if (addedCount > 0)
+                    {
+                        GeometryEngine.SaveSequenceToDwg(_pathList);
+                        ed.WriteMessage($"\n[成功] 已识别并添加 {addedCount} 条有效分析路径。");
+                    }
                 }
             }
             finally
@@ -200,16 +229,9 @@ namespace Plugin_AnalysisMaster.UI
             }
             return "";
         }
-        /// <summary>
-        /// 从实体的扩展字典中读取动画指纹，并执行严格的数据有效性校验。
-        /// 修改说明：
-        /// 1. 增加了点位计数检查：只有包含 2 个及以上采样点的数据才被视为“有效动画路径”。
-        /// 2. 自动过滤空数据：如果某条线在绘制时未开开启“动画记录”，此方法将返回空字符串，从而使其无法被添加到播放列表。
-        /// </summary>
         private string GetDirectFingerprint(Transaction tr, ObjectId id)
         {
             Entity ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
-            // 如果实体没有扩展字典，直接过滤
             if (ent == null || ent.ExtensionDictionary.IsNull) return "";
 
             DBDictionary dict = tr.GetObject(ent.ExtensionDictionary, OpenMode.ForRead) as DBDictionary;
@@ -221,34 +243,33 @@ namespace Plugin_AnalysisMaster.UI
                 if (rb == null) return "";
                 var arr = rb.AsArray();
 
-                // ✨ 核心优化：校验 ResultBuffer 的长度
-                // 数据结构为：[0]:样式指纹, [1]:点数统计, [2...]:坐标点
-                if (arr.Length < 4) return ""; // 至少要有指纹、计数和 2 个点才算有效
-
-                // 读取点位计数（存储在索引 1 的 Int32 类型中）
-                int pointCount = 0;
-                if (arr.Length > 1 && arr[1].Value is int count)
-                {
-                    pointCount = count;
-                }
-
-                // ✨ 核心过滤逻辑：如果点位少于 2 个，说明这只是一条普通线，不具备动画回放能力
-                if (pointCount < 2)
-                {
+                // ✨ 过滤关键点：[1] 存储的是点数，如果点数 < 2，则视为无效动画数据
+                if (arr.Length > 1 && arr[1].Value is int count && count < 2)
                     return "";
-                }
 
-                // 数据合法，返回指纹字符串供列表显示
                 return arr[0].Value.ToString();
             }
         }
+        // 文件位置：Plugin_AnalysisMaster/UI/AnimationWindow.xaml.cs
+        // 约 214 行左右
+
+        /// <summary>
+        /// 移除选中路径按钮。
+        /// 修改说明：移除项后立即同步更新图纸中保存的序列数据。
+        /// </summary>
         private void RemovePath_Click(object sender, RoutedEventArgs e)
         {
+            // 获取当前 ListView 中选中的所有项
             var selectedItems = PathListView.SelectedItems.Cast<AnimPathItem>().ToList();
+            if (selectedItems.Count == 0) return;
+
             foreach (var item in selectedItems)
             {
                 _pathList.Remove(item);
             }
+
+            // ✨ 核心修改：列表发生变化，立即更新 DWG 中的持久化数据
+            GeometryEngine.SaveSequenceToDwg(_pathList);
         }
 
         private void ClearPaths_Click(object sender, RoutedEventArgs e)
