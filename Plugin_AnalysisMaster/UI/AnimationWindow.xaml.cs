@@ -59,12 +59,26 @@ namespace Plugin_AnalysisMaster.UI
         /// 窗口根级容器的鼠标按下预览。
         /// 作用：实现“点击窗口内非列表区域（如按钮边距、标题栏空白处等）”即取消高亮的逻辑。
         /// </summary>
+        // 文件：Plugin_AnalysisMaster/UI/AnimationWindow.xaml.cs
+
         private void RootBorder_PreviewMouseLeftButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
         {
+            // ✨ 核心修复：如果点击的是按钮、输入框等交互控件，直接退出，不清理选中状态
+            DependencyObject dep = (DependencyObject)e.OriginalSource;
+            while (dep != null)
+            {
+                if (dep is System.Windows.Controls.Button || dep is System.Windows.Controls.Primitives.ToggleButton ||
+                    dep is System.Windows.Controls.TextBox || dep is System.Windows.Controls.Slider)
+                {
+                    return;
+                }
+                dep = VisualTreeHelper.GetParent(dep);
+            }
+
             // 检查点击点是否在 ListView 控件的几何范围之内
             var hitTestResult = VisualTreeHelper.HitTest(PathListView, e.GetPosition(PathListView));
 
-            // 如果点击点完全不在 ListView 内部（例如点击了窗口侧边空白或按钮间隔），则取消选中
+            // 如果点击点完全不在 ListView 内部，则取消选中并清理高亮
             if (hitTestResult == null)
             {
                 PathListView.SelectedItem = null;
