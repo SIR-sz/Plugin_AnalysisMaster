@@ -251,8 +251,8 @@ namespace Plugin_AnalysisMaster.Services
         /// <summary>
         /// 异步播放序列逻辑。支持实线/虚线动态切换。
         /// 改进点：
-        /// 1. 自动调用改进后的 EnsureLinetypeLoaded 加载线型。
-        /// 2. 开启 Plinegen 属性，确保虚线在生长过程中线型连续，不产生破碎感。
+        /// 1. 将 doc 对象传递给 EnsureLinetypeLoaded 以支持内部锁定。
+        /// 2. 设置 Plinegen = true 确保虚线跨段落连续。
         /// </summary>
         public static async Task PlaySequenceAsync(
               List<AnimPathItem> items,
@@ -262,7 +262,7 @@ namespace Plugin_AnalysisMaster.Services
               bool isPersistent,
               CancellationToken token)
         {
-            Document doc = Application.DocumentManager.MdiActiveDocument;
+            Document doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
             if (doc == null) return;
             Editor ed = doc.Editor;
 
@@ -280,8 +280,8 @@ namespace Plugin_AnalysisMaster.Services
 
             if (allData.Count == 0) return;
 
-            // ✨ 提前确保 DASHED 线型已就绪
-            ObjectId dashLtId = EnsureLinetypeLoaded(doc.Database, "DASHED");
+            // ✨ 传入 doc 对象解决锁定问题
+            ObjectId dashLtId = EnsureLinetypeLoaded(doc, "DASHED");
 
             List<Polyline> activeTransients = new List<Polyline>();
             IntegerCollection vps = new IntegerCollection();
@@ -308,16 +308,14 @@ namespace Plugin_AnalysisMaster.Services
 
                         foreach (var path in groupPaths)
                         {
-                            // ✨ 关键点：Plinegen = true 确保虚线图案跨顶点连续
                             Polyline pl = new Polyline { Plinegen = true };
                             pl.Color = path.data.Color;
                             pl.Layer = path.data.Layer;
 
-                            // 根据设置应用虚线样式
                             if (path.item.LineStyle == AnimLineStyle.Dash)
                             {
                                 pl.LinetypeId = dashLtId;
-                                pl.LinetypeScale = 2.0; // 可根据需要调整此比例
+                                pl.LinetypeScale = 2.0;
                             }
 
                             pl.AddVertexAt(0, new Point2d(path.data.Points[0].X, path.data.Points[0].Y), 0, thickness, thickness);
@@ -1374,49 +1372,59 @@ namespace Plugin_AnalysisMaster.Services
         /// </summary>
         /// <summary>
         /// 确保 CAD 数据库中已加载指定的线型（如 DASHED）。
-        /// 改进点：采用分段事务处理逻辑。先检查是否存在，若不存在则调用 API 加载（自动管理内部事务），
-        /// 最后再次开启事务获取 ID。这种方式能彻底解决加载后无法立即识别的问题。
+        /// 改进点：
+        /// 1. 增加了 doc.LockDocument() 逻辑，彻底解决异步调用下的 eLockViolation 错误。
+        /// 2. 优化了路径获取逻辑，确保在各种安装环境下都能定位到 Assets 文件夹。
         /// </summary>
-        private static ObjectId EnsureLinetypeLoaded(Database db, string ltName)
+        private static ObjectId EnsureLinetypeLoaded(Document doc, string ltName)
         {
-            // 步骤1：检查是否已存在
+            Database db = doc.Database;
+            Editor ed = doc.Editor;
+
+            // 1. 先检查内存中是否已存在
             using (var tr = db.TransactionManager.StartTransaction())
             {
                 LinetypeTable lt = (LinetypeTable)tr.GetObject(db.LinetypeTableId, OpenMode.ForRead);
                 if (lt.Has(ltName)) return lt[ltName];
-                // 发现不存在，不执行 commit，直接结束本次读取事务
             }
 
-            // 步骤2：尝试从线型库文件加载 (此方法内部会处理事务，不要放在外部事务中)
+            // 2. 定位插件目录
+            string dllPath = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
+            string isoLinPath = Path.Combine(dllPath, "Assets", "acadiso.lin");
+            string stdLinPath = Path.Combine(dllPath, "Assets", "acad.lin");
+
+            string finalLinPath = "";
+            if (File.Exists(isoLinPath)) finalLinPath = isoLinPath;
+            else if (File.Exists(stdLinPath)) finalLinPath = stdLinPath;
+
+            // 3. 执行锁定并加载
             try
             {
-                // 优先加载公制标准线型库 (大部分中国用户使用此库)
-                db.LoadLineTypeFile(ltName, "acadiso.lin");
-            }
-            catch
-            {
-                try
+                // ✨ 核心修复：异步环境下修改数据库必须锁定文档
+                using (doc.LockDocument())
                 {
-                    // 如果公制库失败，尝试加载英制库
-                    db.LoadLineTypeFile(ltName, "acad.lin");
+                    if (!string.IsNullOrEmpty(finalLinPath))
+                    {
+                        db.LoadLineTypeFile(ltName, finalLinPath);
+                    }
+                    else
+                    {
+                        // 兜底方案：尝试从 CAD 系统路径加载
+                        try { db.LoadLineTypeFile(ltName, "acadiso.lin"); }
+                        catch { db.LoadLineTypeFile(ltName, "acad.lin"); }
+                    }
                 }
-                catch
-                {
-                    // 如果都加载失败（例如文件名不存在），则退回到实线
-                    return db.ContinuousLinetype;
-                }
-            }
 
-            // 步骤3：重新开启事务获取新加载的线型 ID
-            using (var tr = db.TransactionManager.StartTransaction())
-            {
-                LinetypeTable lt = (LinetypeTable)tr.GetObject(db.LinetypeTableId, OpenMode.ForRead);
-                if (lt.Has(ltName))
+                // 4. 加载后重新获取 ID
+                using (var trVerify = db.TransactionManager.StartTransaction())
                 {
-                    ObjectId id = lt[ltName];
-                    tr.Commit(); // 确认获取
-                    return id;
+                    LinetypeTable ltVerify = (LinetypeTable)trVerify.GetObject(db.LinetypeTableId, OpenMode.ForRead);
+                    if (ltVerify.Has(ltName)) return ltVerify[ltName];
                 }
+            }
+            catch (System.Exception ex)
+            {
+                ed.WriteMessage($"\n[错误] 自动加载线型失败: {ex.Message}");
             }
 
             return db.ContinuousLinetype;
