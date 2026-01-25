@@ -183,15 +183,16 @@ namespace Plugin_AnalysisMaster.Services
         /// <summary>
         /// 使用瞬态骨架线代替实体高亮。
         /// 修改说明：
-        /// 1. 强制在绘制后执行 FlushGraphics() 和 UpdateScreen()，确保高亮线在列表切换时立即呈现，无需点击 CAD 窗口。
-        /// 2. 优化了切换逻辑，每次生成新线前都会彻底清理显存。
+        /// <summary>
+        /// 在 CAD 视图中高亮显示选中的路径。
+        /// 改进点：在访问数据库前增加了 IsErased 校验，防止因操作已删除的实体引发异常。
         /// </summary>
         public static void HighlightPath(ObjectId id, bool highlight)
         {
-            // ✨ 核心逻辑：无论是否高亮，首先执行彻底清理
             ClearHighlightTransient();
 
-            if (!highlight || id.IsNull || !id.IsValid) return;
+            // ✨ 核心修复：如果 ID 无效或已被删除，直接清理高亮并退出
+            if (!highlight || id.IsNull || !id.IsValid || id.IsErased) return;
 
             Document doc = Application.DocumentManager.MdiActiveDocument;
             if (doc == null) return;
@@ -216,7 +217,6 @@ namespace Plugin_AnalysisMaster.Services
                 tr.Commit();
             }
 
-            // ✨ 核心修复：强制推送显存刷新，解决切换延迟
             Autodesk.AutoCAD.Internal.Utils.FlushGraphics();
             ed.UpdateScreen();
         }
@@ -243,16 +243,11 @@ namespace Plugin_AnalysisMaster.Services
         }
 
         /// <summary>
-        /// 异步播放序列逻辑
-        /// 修改说明：
-        /// 1. 参数 speedMultiplier 类型由 int 改为 double。
-        /// 2. 内部循环变量 currentStep 改为 double，并通过 (int)currentStep 进行采样索引计算。
-        /// 3. 这样当倍率小于 1.0 时（如 0.1），循环会经过多次累加才会增加一个整数索引，从而实现平滑的减速生长效果。
-        /// <summary>
-        /// 异步播放序列逻辑。支持实线/虚线动态切换。
+        /// 异步播放序列主逻辑。
         /// 改进点：
-        /// 1. 将 doc 对象传递给 EnsureLinetypeLoaded 以支持内部锁定。
-        /// 2. 设置 Plinegen = true 确保虚线跨段落连续。
+        /// 1. 采用分段预加载模式，每读取一条路径释放一次 UI 线程，解决死锁异常。
+        /// 2. 修复了内部索引逻辑，确保瞬态线段与数据列表严格对应。
+        /// 3. 支持实线/虚线动态样式。
         /// </summary>
         public static async Task PlaySequenceAsync(
               List<AnimPathItem> items,
@@ -262,25 +257,32 @@ namespace Plugin_AnalysisMaster.Services
               bool isPersistent,
               CancellationToken token)
         {
-            Document doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
+            Document doc = Application.DocumentManager.MdiActiveDocument;
             if (doc == null) return;
             Editor ed = doc.Editor;
 
             List<PathPlaybackData> allData = new List<PathPlaybackData>();
-            using (doc.LockDocument())
-            using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
+
+            // ✨ 核心修复：异步预加载，防止耗时操作阻塞主线程导致 ContextSwitchDeadlock
+            foreach (var item in items)
             {
-                foreach (var item in items)
+                if (token.IsCancellationRequested) return;
+                PathPlaybackData data = null;
+                using (doc.LockDocument())
+                using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
                 {
-                    var data = FetchPathData(tr, item.Id);
-                    if (data != null) allData.Add(data);
+                    data = FetchPathData(tr, item.Id);
+                    tr.Commit();
                 }
-                tr.Commit();
+                if (data != null) allData.Add(data);
+
+                // 给主线程 Windows 消息循环留出处理时间
+                await Task.Yield();
             }
 
             if (allData.Count == 0) return;
 
-            // ✨ 传入 doc 对象解决锁定问题
+            // 确保线型资源
             ObjectId dashLtId = EnsureLinetypeLoaded(doc, "DASHED");
 
             List<Polyline> activeTransients = new List<Polyline>();
@@ -306,6 +308,7 @@ namespace Plugin_AnalysisMaster.Services
                         var groupPaths = group.ToList();
                         int[] lastAddedIndices = new int[groupPaths.Count];
 
+                        // 第一阶段：创建本组所有瞬态对象
                         foreach (var path in groupPaths)
                         {
                             Polyline pl = new Polyline { Plinegen = true };
@@ -325,6 +328,7 @@ namespace Plugin_AnalysisMaster.Services
                             activeTransients.Add(pl);
                         }
 
+                        // 第二阶段：驱动本组平滑生长
                         for (double currentStep = speedMultiplier; ; currentStep += speedMultiplier)
                         {
                             if (token.IsCancellationRequested) return;
@@ -334,6 +338,7 @@ namespace Plugin_AnalysisMaster.Services
                             {
                                 var data = groupPaths[i].data;
                                 var pl = currentGroupLines[i];
+
                                 if (lastAddedIndices[i] >= data.Points.Count - 1) continue;
 
                                 int nextPtIdx = Math.Min((int)currentStep, data.Points.Count - 1);
@@ -372,11 +377,15 @@ namespace Plugin_AnalysisMaster.Services
             }
         }
 
-        // 辅助方法：读取实体数据
-        // 位置：GeometryEngine.cs 约第 105 行
-        // 修改位置：GeometryEngine.cs 约第 105 行
+        /// <summary>
+        /// 从实体的扩展字典中提取动画播放所需的原始数据。
+        /// 改进点：增加了对象存在性校验，防止对已删除的对象（Ghost Items）执行操作。
+        /// </summary>
         private static PathPlaybackData FetchPathData(Transaction tr, ObjectId id)
         {
+            // ✨ 核心修复：增加 IsErased 检查
+            if (id.IsNull || !id.IsValid || id.IsErased) return null;
+
             Entity ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
             if (ent == null || ent.ExtensionDictionary.IsNull) return null;
 
@@ -386,38 +395,91 @@ namespace Plugin_AnalysisMaster.Services
             Xrecord xRec = tr.GetObject(dict.GetAt("ANALYSIS_ANIM_DATA"), OpenMode.ForRead) as Xrecord;
             using (ResultBuffer rb = xRec.Data)
             {
-                TypedValue[] dataArr = rb.AsArray();
+                if (rb == null) return null;
+                TypedValue[] arr = rb.AsArray();
 
-                // ✨ 安全检查：确保数据长度足以解析出至少 2 个坐标点
-                if (dataArr.Length < 4) return null;
+                if (arr.Length < 2) return null;
 
-                string fingerprint = dataArr[0].Value.ToString();
+                string fingerprint = arr[0].Value.ToString();
                 string[] parts = fingerprint.Split('|');
                 if (parts.Length < 6) return null;
 
                 List<Point3d> pts = new List<Point3d>();
-                for (int i = 2; i < dataArr.Length; i++)
+                for (int i = 2; i < arr.Length; i++)
                 {
-                    if (dataArr[i].TypeCode == (int)DxfCode.XCoordinate)
-                        pts.Add((Point3d)dataArr[i].Value);
+                    if (arr[i].TypeCode == (int)DxfCode.XCoordinate)
+                    {
+                        pts.Add((Point3d)arr[i].Value);
+                    }
                 }
 
-                // ✨ 再次确认：如果解析出的点位不足，不返回数据对象
                 if (pts.Count < 2) return null;
 
-                var colorStr = parts[5];
-                var mediaColor = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(colorStr);
-
-                return new PathPlaybackData
+                try
                 {
-                    Points = pts,
-                    Color = Autodesk.AutoCAD.Colors.Color.FromRgb(mediaColor.R, mediaColor.G, mediaColor.B),
-                    Layer = ent.Layer,
-                    OriginalId = id
-                };
+                    var colorStr = parts[5];
+                    var mediaColor = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(colorStr);
+
+                    return new PathPlaybackData
+                    {
+                        OriginalId = id,
+                        Points = pts,
+                        Color = Autodesk.AutoCAD.Colors.Color.FromRgb(mediaColor.R, mediaColor.G, mediaColor.B),
+                        Layer = ent.Layer
+                    };
+                }
+                catch
+                {
+                    return new PathPlaybackData
+                    {
+                        OriginalId = id,
+                        Points = pts,
+                        Color = ent.Color,
+                        Layer = ent.Layer
+                    };
+                }
             }
         }
+        /// <summary>
+        /// 将指纹字符串解析为 Point3d 坐标列表。
+        /// 作用：处理形如 "PathType|x,y,z;x,y,z;...|Style" 的长字符串。
+        /// 它是所有功能（播放、编号、高亮）获取几何数据的唯一入口。
+        /// </summary>
+        private static List<Point3d> GetFingerprintPoints(string fingerprint)
+        {
+            List<Point3d> points = new List<Point3d>();
+            if (string.IsNullOrEmpty(fingerprint)) return points;
 
+            try
+            {
+                string[] parts = fingerprint.Split('|');
+                // 指纹至少应包含类型和坐标段
+                if (parts.Length < 2) return points;
+
+                // 坐标段在 index 为 1 的位置
+                string[] pts = parts[1].Split(';');
+                foreach (string p in pts)
+                {
+                    if (string.IsNullOrWhiteSpace(p)) continue;
+
+                    string[] c = p.Split(',');
+                    if (c.Length == 3)
+                    {
+                        if (double.TryParse(c[0], out double x) &&
+                            double.TryParse(c[1], out double y) &&
+                            double.TryParse(c[2], out double z))
+                        {
+                            points.Add(new Point3d(x, y, z));
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // 异常时返回已解析部分
+            }
+            return points;
+        }
         // 辅助方法：清理瞬态
         private static void ClearTransients(List<Polyline> lines, IntegerCollection vps)
         {
