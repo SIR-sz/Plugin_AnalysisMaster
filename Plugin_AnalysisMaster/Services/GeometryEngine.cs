@@ -33,28 +33,28 @@ namespace Plugin_AnalysisMaster.Services
         private const string AnimSequenceKey = "ANALYSIS_ANIM_SEQUENCE";
 
         /// <summary>
-        /// 将当前播放列表持久化到 DWG 文件的 NOD 字典中。
-        /// 使用 Handle（句柄）替代 ObjectId，确保文件重启后仍能找回。
+        /// 将动画序列保存到 DWG 的 NOD 字典中。
+        /// 改进点：确保每一个路径条目固定占用 3 个 TypedValue 位置，方便读取。
         /// </summary>
         public static void SaveSequenceToDwg(IEnumerable<AnimPathItem> items)
         {
             Document doc = Application.DocumentManager.MdiActiveDocument;
-            if (doc == null) return;
+            if (doc == null || items == null) return;
 
             using (doc.LockDocument())
             using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
             {
                 DBDictionary nod = (DBDictionary)tr.GetObject(doc.Database.NamedObjectsDictionaryId, OpenMode.ForWrite);
 
-                // 创建或获取专属 Xrecord
                 Xrecord xRec = new Xrecord();
                 ResultBuffer rb = new ResultBuffer();
 
                 foreach (var item in items)
                 {
-                    // 存储结构：Handle (DxfCode.Text), GroupNumber (DxfCode.Int32)
+                    // 顺序：1.句柄(Text) 2.组号(Int32) 3.线型(Int32)
                     rb.Add(new TypedValue((int)DxfCode.Text, item.Id.Handle.ToString()));
                     rb.Add(new TypedValue((int)DxfCode.Int32, item.GroupNumber));
+                    rb.Add(new TypedValue((int)DxfCode.Int32, (int)item.LineStyle));
                 }
 
                 xRec.Data = rb;
@@ -68,10 +68,14 @@ namespace Plugin_AnalysisMaster.Services
         /// 完善后的加载逻辑。
         /// 修改说明：将原本空的注释块替换为真实的句柄找回逻辑。
         /// </summary>
+        /// <summary>
+        /// 从 DWG 中读取持久化的动画序列。
+        /// 改进点：严格按 3 位步进读取，并对缺失线型的数据（旧数据）进行兼容处理。
+        /// </summary>
         public static List<AnimPathItem> LoadSequenceFromDwg()
         {
             List<AnimPathItem> items = new List<AnimPathItem>();
-            var doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
+            var doc = Application.DocumentManager.MdiActiveDocument;
             if (doc == null) return items;
 
             using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
@@ -85,18 +89,31 @@ namespace Plugin_AnalysisMaster.Services
                     if (rb == null) return items;
                     TypedValue[] arr = rb.AsArray();
 
-                    for (int i = 0; i < arr.Length; i += 2)
+                    // 步长为 3：句柄, 组号, 线型
+                    for (int i = 0; i < arr.Length; i += 3)
                     {
+                        if (i + 1 >= arr.Length) break;
+
                         string handleStr = arr[i].Value.ToString();
                         int groupNum = (int)arr[i + 1].Value;
 
-                        // ✨ 核心修复：通过永久句柄找回当前的 ObjectId
+                        // 线型属性兼容性处理：如果数据长度不足 3 位则是旧数据，默认为实线
+                        AnimLineStyle lineStyle = AnimLineStyle.Solid;
+                        if (i + 2 < arr.Length && arr[i + 2].TypeCode == (int)DxfCode.Int32)
+                        {
+                            lineStyle = (AnimLineStyle)(int)arr[i + 2].Value;
+                        }
+
                         if (doc.Database.TryGetObjectId(new Handle(Convert.ToInt64(handleStr, 16)), out ObjectId id))
                         {
                             if (id.IsValid && !id.IsErased)
                             {
-                                // 先存入基础数据，由 UI 层在 Restore 时补全样式
-                                items.Add(new AnimPathItem { Id = id, GroupNumber = groupNum });
+                                items.Add(new AnimPathItem
+                                {
+                                    Id = id,
+                                    GroupNumber = groupNum,
+                                    LineStyle = lineStyle
+                                });
                             }
                         }
                     }
@@ -231,11 +248,16 @@ namespace Plugin_AnalysisMaster.Services
         /// 1. 参数 speedMultiplier 类型由 int 改为 double。
         /// 2. 内部循环变量 currentStep 改为 double，并通过 (int)currentStep 进行采样索引计算。
         /// 3. 这样当倍率小于 1.0 时（如 0.1），循环会经过多次累加才会增加一个整数索引，从而实现平滑的减速生长效果。
+        /// <summary>
+        /// 异步播放序列逻辑。支持实线/虚线动态切换。
+        /// 改进点：
+        /// 1. 自动调用改进后的 EnsureLinetypeLoaded 加载线型。
+        /// 2. 开启 Plinegen 属性，确保虚线在生长过程中线型连续，不产生破碎感。
         /// </summary>
         public static async Task PlaySequenceAsync(
               List<AnimPathItem> items,
               double thickness,
-              double speedMultiplier, // ✨ 修改为 double
+              double speedMultiplier,
               bool isLoop,
               bool isPersistent,
               CancellationToken token)
@@ -257,6 +279,10 @@ namespace Plugin_AnalysisMaster.Services
             }
 
             if (allData.Count == 0) return;
+
+            // ✨ 提前确保 DASHED 线型已就绪
+            ObjectId dashLtId = EnsureLinetypeLoaded(doc.Database, "DASHED");
+
             List<Polyline> activeTransients = new List<Polyline>();
             IntegerCollection vps = new IntegerCollection();
 
@@ -264,7 +290,6 @@ namespace Plugin_AnalysisMaster.Services
             {
                 do
                 {
-                    // A. 隐藏所有原始实体
                     ToggleEntitiesVisibility(items.Select(i => i.Id), false);
 
                     var groupedData = items
@@ -281,12 +306,20 @@ namespace Plugin_AnalysisMaster.Services
                         var groupPaths = group.ToList();
                         int[] lastAddedIndices = new int[groupPaths.Count];
 
-                        // B. 初始化引导线
                         foreach (var path in groupPaths)
                         {
+                            // ✨ 关键点：Plinegen = true 确保虚线图案跨顶点连续
                             Polyline pl = new Polyline { Plinegen = true };
                             pl.Color = path.data.Color;
                             pl.Layer = path.data.Layer;
+
+                            // 根据设置应用虚线样式
+                            if (path.item.LineStyle == AnimLineStyle.Dash)
+                            {
+                                pl.LinetypeId = dashLtId;
+                                pl.LinetypeScale = 2.0; // 可根据需要调整此比例
+                            }
+
                             pl.AddVertexAt(0, new Point2d(path.data.Points[0].X, path.data.Points[0].Y), 0, thickness, thickness);
                             pl.ConstantWidth = thickness;
                             TransientManager.CurrentTransientManager.AddTransient(pl, TransientDrawingMode.DirectTopmost, 128, vps);
@@ -294,8 +327,6 @@ namespace Plugin_AnalysisMaster.Services
                             activeTransients.Add(pl);
                         }
 
-                        // C. 引导线生长循环
-                        // ✨ 修改：currentStep 改为 double 以支持非整数倍率步进
                         for (double currentStep = speedMultiplier; ; currentStep += speedMultiplier)
                         {
                             if (token.IsCancellationRequested) return;
@@ -307,7 +338,6 @@ namespace Plugin_AnalysisMaster.Services
                                 var pl = currentGroupLines[i];
                                 if (lastAddedIndices[i] >= data.Points.Count - 1) continue;
 
-                                // ✨ 修改：通过强转 int 获取当前步进所在的点位索引
                                 int nextPtIdx = Math.Min((int)currentStep, data.Points.Count - 1);
                                 if (nextPtIdx > lastAddedIndices[i])
                                 {
@@ -324,9 +354,7 @@ namespace Plugin_AnalysisMaster.Services
                             if (allFinished) break;
                         }
 
-                        // D. 恢复本组原始单元
                         ToggleEntitiesVisibility(groupPaths.Select(p => p.item.Id), isPersistent);
-
                         foreach (var pl in currentGroupLines)
                         {
                             TransientManager.CurrentTransientManager.EraseTransient(pl, vps);
@@ -1339,6 +1367,59 @@ namespace Plugin_AnalysisMaster.Services
                     tr.AddNewlyCreatedDBObject(ltr, true);
                 }
             }
+        }
+        /// <summary>
+        /// 确保 CAD 数据库中已加载指定的线型（支持 acad.lin 和 acadiso.lin）。
+        /// 改进点：增加了事务提交逻辑和多线型文件搜索，确保加载后立即生效。
+        /// </summary>
+        /// <summary>
+        /// 确保 CAD 数据库中已加载指定的线型（如 DASHED）。
+        /// 改进点：采用分段事务处理逻辑。先检查是否存在，若不存在则调用 API 加载（自动管理内部事务），
+        /// 最后再次开启事务获取 ID。这种方式能彻底解决加载后无法立即识别的问题。
+        /// </summary>
+        private static ObjectId EnsureLinetypeLoaded(Database db, string ltName)
+        {
+            // 步骤1：检查是否已存在
+            using (var tr = db.TransactionManager.StartTransaction())
+            {
+                LinetypeTable lt = (LinetypeTable)tr.GetObject(db.LinetypeTableId, OpenMode.ForRead);
+                if (lt.Has(ltName)) return lt[ltName];
+                // 发现不存在，不执行 commit，直接结束本次读取事务
+            }
+
+            // 步骤2：尝试从线型库文件加载 (此方法内部会处理事务，不要放在外部事务中)
+            try
+            {
+                // 优先加载公制标准线型库 (大部分中国用户使用此库)
+                db.LoadLineTypeFile(ltName, "acadiso.lin");
+            }
+            catch
+            {
+                try
+                {
+                    // 如果公制库失败，尝试加载英制库
+                    db.LoadLineTypeFile(ltName, "acad.lin");
+                }
+                catch
+                {
+                    // 如果都加载失败（例如文件名不存在），则退回到实线
+                    return db.ContinuousLinetype;
+                }
+            }
+
+            // 步骤3：重新开启事务获取新加载的线型 ID
+            using (var tr = db.TransactionManager.StartTransaction())
+            {
+                LinetypeTable lt = (LinetypeTable)tr.GetObject(db.LinetypeTableId, OpenMode.ForRead);
+                if (lt.Has(ltName))
+                {
+                    ObjectId id = lt[ltName];
+                    tr.Commit(); // 确认获取
+                    return id;
+                }
+            }
+
+            return db.ContinuousLinetype;
         }
 
     }

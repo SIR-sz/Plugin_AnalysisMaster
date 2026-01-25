@@ -114,16 +114,17 @@ namespace Plugin_AnalysisMaster.UI
             this.Hide();
         }
 
-        // 文件：Plugin_AnalysisMaster/UI/AnimationWindow.xaml.cs
-
+        /// <summary>
+        /// 从图纸数据库中恢复动画播放序列。
+        /// 修改说明：
+        /// 1. ✨ 核心修复：增加了对 fullItem.LineStyle 的赋值逻辑，确保窗口打开时能恢复保存的线型设置。
+        /// </summary>
         private void RestoreSequence()
         {
-            // 1. 从图纸读取基础数据
             var baseItems = GeometryEngine.LoadSequenceFromDwg();
             if (baseItems.Count == 0) return;
 
             _pathList.Clear();
-            // ✨ 解决歧义：显式指定 AutoCAD 的 Application
             var doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
             if (doc == null) return;
 
@@ -131,21 +132,33 @@ namespace Plugin_AnalysisMaster.UI
             {
                 foreach (var baseItem in baseItems)
                 {
-                    // 2. 重新获取实体的动画指纹
                     string fp = GetAnimFingerprint(tr, baseItem.Id, out _);
                     if (!string.IsNullOrEmpty(fp))
                     {
                         Entity ent = tr.GetObject(baseItem.Id, OpenMode.ForRead) as Entity;
-                        // 3. 重建完整的 UI 绑定对象
                         var fullItem = CreatePathItemFromEntity(tr, ent, fp);
                         if (fullItem != null)
                         {
-                            fullItem.GroupNumber = baseItem.GroupNumber; // 恢复保存的组号
+                            fullItem.GroupNumber = baseItem.GroupNumber;
+                            // ✨ 核心修复：从持久化数据中恢复线型属性
+                            fullItem.LineStyle = baseItem.LineStyle;
                             _pathList.Add(fullItem);
                         }
                     }
                 }
                 tr.Commit();
+            }
+        }
+        /// <summary>
+        /// 响应线型下拉框变更事件。
+        /// 作用：当用户在界面修改某条路径的实虚线设置时，立即触发持久化保存，防止数据丢失。
+        /// </summary>
+        private void LineStyle_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            // 只有在窗口完全加载后（避免初始化触发）且列表有数据时才执行保存
+            if (this.IsLoaded && _pathList != null)
+            {
+                GeometryEngine.SaveSequenceToDwg(_pathList);
             }
         }
         #region 1. 列表操作 (添加、移除、清空)
