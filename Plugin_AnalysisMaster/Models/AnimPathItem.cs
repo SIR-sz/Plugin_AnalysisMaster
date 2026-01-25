@@ -45,6 +45,8 @@ namespace Plugin_AnalysisMaster.Models
 
         public System.Windows.Media.Color PathColor { get; set; }
 
+
+
         public event PropertyChangedEventHandler PropertyChanged;
         protected void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }

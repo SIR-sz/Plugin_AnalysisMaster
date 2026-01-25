@@ -116,8 +116,7 @@ namespace Plugin_AnalysisMaster.UI
 
         /// <summary>
         /// 从图纸数据库中恢复动画播放序列。
-        /// 修改说明：
-        /// 1. ✨ 核心修复：增加了对 fullItem.LineStyle 的赋值逻辑，确保窗口打开时能恢复保存的线型设置。
+        /// 改进点：在创建 fullItem 后，显式将数据库读取的 Name 和样式属性赋值给 UI 模型。
         /// </summary>
         private void RestoreSequence()
         {
@@ -128,10 +127,17 @@ namespace Plugin_AnalysisMaster.UI
             var doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
             if (doc == null) return;
 
+            bool hasGhostItems = false;
             using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
             {
                 foreach (var baseItem in baseItems)
                 {
+                    if (baseItem.Id.IsNull || !baseItem.Id.IsValid || baseItem.Id.IsErased)
+                    {
+                        hasGhostItems = true;
+                        continue;
+                    }
+
                     string fp = GetAnimFingerprint(tr, baseItem.Id, out _);
                     if (!string.IsNullOrEmpty(fp))
                     {
@@ -139,15 +145,23 @@ namespace Plugin_AnalysisMaster.UI
                         var fullItem = CreatePathItemFromEntity(tr, ent, fp);
                         if (fullItem != null)
                         {
+                            // ✨ 核心修复：用从图纸读取的数据覆盖 UI 的默认生成值
                             fullItem.GroupNumber = baseItem.GroupNumber;
-                            // ✨ 核心修复：从持久化数据中恢复线型属性
                             fullItem.LineStyle = baseItem.LineStyle;
+                            if (!string.IsNullOrEmpty(baseItem.Name))
+                            {
+                                fullItem.Name = baseItem.Name; // 恢复自定义描述
+                            }
+
                             _pathList.Add(fullItem);
                         }
                     }
+                    else { hasGhostItems = true; }
                 }
                 tr.Commit();
             }
+
+            if (hasGhostItems) GeometryEngine.SaveSequenceToDwg(_pathList);
         }
         /// <summary>
         /// 响应动画图例生成按钮点击。
@@ -405,42 +419,75 @@ namespace Plugin_AnalysisMaster.UI
         #region 2. 播放控制
 
         /// <summary>
-        /// 播放按钮点击事件处理逻辑。
-        /// 修改说明：将 speed 的变量类型从 int 改为 double，以支持 0.1 - 10 倍速的浮点数调节，
-        /// 并同步修改了传给 GeometryEngine.PlaySequenceAsync 的参数类型。
+        /// 响应“播放”按钮点击。
+        /// 包含逻辑：参数获取、任务取消令牌管理、调用智能双模式引擎。
         /// </summary>
         private async void BtnPlay_Click(object sender, RoutedEventArgs e)
         {
-            if (_pathList.Count == 0) return;
+            // 1. 如果当前正在播放，则先停止（防止任务堆叠）
+            if (_cts != null)
+            {
+                _cts.Cancel();
+                _cts.Dispose();
+                _cts = null;
+            }
 
-            BtnPlay.IsEnabled = false;
-            BtnStop.IsEnabled = true;
+            // 2. 检查是否有可播放的路径
+            if (_pathList == null || _pathList.Count == 0)
+            {
+                return;
+            }
+
+            // 3. 从 UI 获取播放参数
+            // 注意：确保 SliderThickness, SliderSpeed, ChkLoop, ChkPersistent, ChkObstructed 在 XAML 中已正确命名
+            double thickness = (double)SliderThickness.Value;
+            double speed = (double)SliderSpeed.Value;
+            bool isLoop = ChkLoop.IsChecked == true;
+            bool isPersistent = ChkPersistent.IsChecked == true;
+
+            // ✨ 获取新增的“是否有遮挡”状态
+            bool isObstructed = ChkObstructed.IsChecked == true;
+
+            // 4. 初始化取消令牌
             _cts = new CancellationTokenSource();
 
             try
             {
-                double thickness = ThicknessSlider.Value;
-                // ✨ 修改：由 (int) 改为直接获取 double 值
-                double speed = SpeedSlider.Value;
-                bool isLoop = LoopCheck.IsChecked == true;
-                bool isPersistent = PersistenceCheck.IsChecked == true;
+                // 5. 改变 UI 状态（可选：比如禁用播放按钮，启用停止按钮）
+                BtnPlay.IsEnabled = false;
+                BtnStop.IsEnabled = true;
 
+                // 6. 调用 GeometryEngine 中的双模式异步播放逻辑
                 await GeometryEngine.PlaySequenceAsync(
                     _pathList.ToList(),
                     thickness,
-                    speed, // 传入 double 类型倍速
+                    speed,
                     isLoop,
                     isPersistent,
-                    _cts.Token);
+                    isObstructed,
+                    _cts.Token
+                );
             }
-            catch (OperationCanceledException) { }
-            catch (System.Exception ex) { MessageBox.Show("播放出错: " + ex.Message); }
+            catch (OperationCanceledException)
+            {
+                // 捕获用户点击“停止”引发的取消异常，无需处理
+            }
+            catch (System.Exception ex)
+            {
+                // 其他潜在异常处理
+                Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument.Editor.WriteMessage($"\n[回放错误]: {ex.Message}");
+            }
             finally
             {
+                // 7. 恢复按钮状态
                 BtnPlay.IsEnabled = true;
                 BtnStop.IsEnabled = false;
-                _cts?.Dispose();
-                _cts = null;
+
+                if (_cts != null)
+                {
+                    _cts.Dispose();
+                    _cts = null;
+                }
             }
         }
 
@@ -508,27 +555,33 @@ namespace Plugin_AnalysisMaster.UI
     #region 4. 值转换器 (用于 XAML 绑定)
 
     // 如果你没有在独立文件中定义，可以暂时放在这里
+    /// <summary>
+    /// 序号转换器：将列表索引转为从 1 开始的显示序号
+    /// </summary>
+    public class IndexConverter : IValueConverter
+    {
+        public object Convert(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture)
+        {
+            if (value is int index) return index + 1;
+            return 1;
+        }
+        public object ConvertBack(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture)
+            => throw new NotImplementedException();
+    }
+
+    /// <summary>
+    /// 颜色转换器：将 CAD 颜色或 Media.Color 转为 WPF 笔刷
+    /// </summary>
     public class ColorToBrushConverter : IValueConverter
     {
         public object Convert(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture)
         {
             if (value is System.Windows.Media.Color color)
-                return new SolidColorBrush(color);
-            return Brushes.Gray;
+                return new System.Windows.Media.SolidColorBrush(color);
+            return System.Windows.Media.Brushes.Gray;
         }
-        public object ConvertBack(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture) => throw new NotImplementedException();
-    }
-
-    public class IndexConverter : IValueConverter
-    {
-        public object Convert(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture)
-        {
-            ListViewItem item = (ListViewItem)value;
-            ListView listView = ItemsControl.ItemsControlFromItemContainer(item) as ListView;
-            int index = listView.ItemContainerGenerator.IndexFromContainer(item);
-            return (index + 1).ToString();
-        }
-        public object ConvertBack(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture) => throw new NotImplementedException();
+        public object ConvertBack(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture)
+            => throw new NotImplementedException();
     }
 
     #endregion

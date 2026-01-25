@@ -33,9 +33,8 @@ namespace Plugin_AnalysisMaster.Services
         private const string AnimSequenceKey = "ANALYSIS_ANIM_SEQUENCE";
 
         /// <summary>
-        /// 将当前动画序列保存到 DWG。
-        /// 修改点：增加了 Name (路径描述) 的保存，确保用户自定义的描述能够持久化。
-        /// 保存顺序：Handle, GroupNumber, LineStyle, Name
+        /// 将动画序列保存到 DWG 的 NOD 字典中。
+        /// 改进点：步长改为 4，增加 Name (路径描述) 的持久化。
         /// </summary>
         public static void SaveSequenceToDwg(IEnumerable<AnimPathItem> items)
         {
@@ -46,15 +45,17 @@ namespace Plugin_AnalysisMaster.Services
             using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
             {
                 DBDictionary nod = (DBDictionary)tr.GetObject(doc.Database.NamedObjectsDictionaryId, OpenMode.ForWrite);
+
                 Xrecord xRec = new Xrecord();
                 ResultBuffer rb = new ResultBuffer();
 
                 foreach (var item in items)
                 {
+                    // 顺序：1.句柄 2.组号 3.线型 4.路径描述
                     rb.Add(new TypedValue((int)DxfCode.Text, item.Id.Handle.ToString()));
                     rb.Add(new TypedValue((int)DxfCode.Int32, item.GroupNumber));
                     rb.Add(new TypedValue((int)DxfCode.Int32, (int)item.LineStyle));
-                    rb.Add(new TypedValue((int)DxfCode.Text, item.Name ?? "")); // ✨ 新增：保存自定义名称
+                    rb.Add(new TypedValue((int)DxfCode.Text, item.Name ?? "")); // ✨ 新增：保存自定义描述
                 }
 
                 xRec.Data = rb;
@@ -65,12 +66,8 @@ namespace Plugin_AnalysisMaster.Services
         }
 
         /// <summary>
-        /// 完善后的加载逻辑。
-        /// 修改说明：将原本空的注释块替换为真实的句柄找回逻辑。
-        /// </summary>
-        /// <summary>
-        /// 从 DWG 加载播放序列。
-        /// 修改点：增加了 Name (路径描述) 的读取逻辑，步进改为 4。
+        /// 从 DWG 中读取持久化的动画序列。
+        /// 改进点：步长改为 4，增加对 Name 字段的读取，并兼容旧的 3 字段数据。
         /// </summary>
         public static List<AnimPathItem> LoadSequenceFromDwg()
         {
@@ -89,15 +86,21 @@ namespace Plugin_AnalysisMaster.Services
                     if (rb == null) return items;
                     TypedValue[] arr = rb.AsArray();
 
-                    // 步长改为 4：Handle, Group, Style, Name
+                    // ✨ 步长改为 4
                     for (int i = 0; i < arr.Length; i += 4)
                     {
                         if (i + 1 >= arr.Length) break;
 
                         string handleStr = arr[i].Value.ToString();
                         int groupNum = (int)arr[i + 1].Value;
-                        int styleVal = (i + 2 < arr.Length) ? (int)arr[i + 2].Value : 0;
-                        string customName = (i + 3 < arr.Length) ? arr[i + 3].Value.ToString() : ""; // ✨ 新增：读取自定义名称
+
+                        // 线型
+                        AnimLineStyle lineStyle = AnimLineStyle.Solid;
+                        if (i + 2 < arr.Length) lineStyle = (AnimLineStyle)(int)arr[i + 2].Value;
+
+                        // ✨ 路径描述：读取第 4 个字段
+                        string customName = "";
+                        if (i + 3 < arr.Length) customName = arr[i + 3].Value.ToString();
 
                         if (doc.Database.TryGetObjectId(new Handle(Convert.ToInt64(handleStr, 16)), out ObjectId id))
                         {
@@ -107,8 +110,8 @@ namespace Plugin_AnalysisMaster.Services
                                 {
                                     Id = id,
                                     GroupNumber = groupNum,
-                                    LineStyle = (AnimLineStyle)styleVal,
-                                    Name = customName // ✨ 还原名称
+                                    LineStyle = lineStyle,
+                                    Name = customName // ✨ 还原描述文字
                                 });
                             }
                         }
@@ -342,11 +345,11 @@ namespace Plugin_AnalysisMaster.Services
         }
 
         /// <summary>
-        /// 异步播放序列主逻辑。
+        /// 异步播放序列主逻辑（智能双模式版）。
         /// 改进点：
-        /// 1. 采用分段预加载模式，每读取一条路径释放一次 UI 线程，解决死锁异常。
-        /// 2. 修复了内部索引逻辑，确保瞬态线段与数据列表严格对应。
-        /// 3. 支持实线/虚线动态样式。
+        /// 1. 引入 isObstructed 参数：
+        ///    - False（默认）：走原始逻辑，每组结束立即交接并刷新，无闪烁。
+        ///    - True：走迹线常驻逻辑，播放中途静默，结束时统一交接并执行 Regen。
         /// </summary>
         public static async Task PlaySequenceAsync(
               List<AnimPathItem> items,
@@ -354,6 +357,7 @@ namespace Plugin_AnalysisMaster.Services
               double speedMultiplier,
               bool isLoop,
               bool isPersistent,
+              bool isObstructed, // ✨ 新参数
               CancellationToken token)
         {
             Document doc = Application.DocumentManager.MdiActiveDocument;
@@ -361,8 +365,7 @@ namespace Plugin_AnalysisMaster.Services
             Editor ed = doc.Editor;
 
             List<PathPlaybackData> allData = new List<PathPlaybackData>();
-
-            // ✨ 核心修复：异步预加载，防止耗时操作阻塞主线程导致 ContextSwitchDeadlock
+            // 预加载逻辑 (已优化)
             foreach (var item in items)
             {
                 if (token.IsCancellationRequested) return;
@@ -374,16 +377,12 @@ namespace Plugin_AnalysisMaster.Services
                     tr.Commit();
                 }
                 if (data != null) allData.Add(data);
-
-                // 给主线程 Windows 消息循环留出处理时间
                 await Task.Yield();
             }
 
             if (allData.Count == 0) return;
 
-            // 确保线型资源
             ObjectId dashLtId = EnsureLinetypeLoaded(doc, "DASHED");
-
             List<Polyline> activeTransients = new List<Polyline>();
             IntegerCollection vps = new IntegerCollection();
 
@@ -391,7 +390,9 @@ namespace Plugin_AnalysisMaster.Services
             {
                 do
                 {
+                    // 每一轮播放开始前：隐藏实体，清理旧瞬态
                     ToggleEntitiesVisibility(items.Select(i => i.Id), false);
+                    ClearTransients(activeTransients, vps);
 
                     var groupedData = items
                         .Select(x => new { item = x, data = allData.FirstOrDefault(d => d.OriginalId == x.Id) })
@@ -401,25 +402,23 @@ namespace Plugin_AnalysisMaster.Services
 
                     foreach (var group in groupedData)
                     {
-                        if (token.IsCancellationRequested) return;
+                        if (token.IsCancellationRequested) break;
 
                         List<Polyline> currentGroupLines = new List<Polyline>();
                         var groupPaths = group.ToList();
                         int[] lastAddedIndices = new int[groupPaths.Count];
 
-                        // 第一阶段：创建本组所有瞬态对象
+                        // A. 创建本组瞬态
                         foreach (var path in groupPaths)
                         {
                             Polyline pl = new Polyline { Plinegen = true };
                             pl.Color = path.data.Color;
                             pl.Layer = path.data.Layer;
-
                             if (path.item.LineStyle == AnimLineStyle.Dash)
                             {
                                 pl.LinetypeId = dashLtId;
                                 pl.LinetypeScale = 2.0;
                             }
-
                             pl.AddVertexAt(0, new Point2d(path.data.Points[0].X, path.data.Points[0].Y), 0, thickness, thickness);
                             pl.ConstantWidth = thickness;
                             TransientManager.CurrentTransientManager.AddTransient(pl, TransientDrawingMode.DirectTopmost, 128, vps);
@@ -427,19 +426,16 @@ namespace Plugin_AnalysisMaster.Services
                             activeTransients.Add(pl);
                         }
 
-                        // 第二阶段：驱动本组平滑生长
+                        // B. 驱动生长过程
                         for (double currentStep = speedMultiplier; ; currentStep += speedMultiplier)
                         {
-                            if (token.IsCancellationRequested) return;
+                            if (token.IsCancellationRequested) break;
                             bool allFinished = true;
-
                             for (int i = 0; i < groupPaths.Count; i++)
                             {
                                 var data = groupPaths[i].data;
                                 var pl = currentGroupLines[i];
-
                                 if (lastAddedIndices[i] >= data.Points.Count - 1) continue;
-
                                 int nextPtIdx = Math.Min((int)currentStep, data.Points.Count - 1);
                                 if (nextPtIdx > lastAddedIndices[i])
                                 {
@@ -450,29 +446,53 @@ namespace Plugin_AnalysisMaster.Services
                                 }
                                 if (lastAddedIndices[i] < data.Points.Count - 1) allFinished = false;
                             }
-
                             Autodesk.AutoCAD.Internal.Utils.FlushGraphics();
                             await Task.Delay(10, token);
                             if (allFinished) break;
                         }
 
-                        ToggleEntitiesVisibility(groupPaths.Select(p => p.item.Id), isPersistent);
-                        foreach (var pl in currentGroupLines)
+                        // ✨ C. 组交接逻辑（核心分支）
+                        if (!isObstructed)
                         {
-                            TransientManager.CurrentTransientManager.EraseTransient(pl, vps);
-                            activeTransients.Remove(pl);
-                            pl.Dispose();
+                            // 模式 A：无遮挡/流畅模式 -> 播完一组立即删除瞬态并恢复迹线
+                            foreach (var pl in currentGroupLines)
+                            {
+                                TransientManager.CurrentTransientManager.EraseTransient(pl, vps);
+                                activeTransients.Remove(pl);
+                                pl.Dispose();
+                            }
+                            ToggleEntitiesVisibility(groupPaths.Select(p => p.item.Id), isPersistent);
+                            await Task.Delay(20, token); // 给 UI 极短的响应时间
+                        }
+                        else
+                        {
+                            // 模式 B：有遮挡模式 -> 保持瞬态线留在屏幕最顶层，不进行实体交接
+                            // 这里什么都不做，继续执行下一组即可
                         }
                     }
+
                     if (!isLoop) break;
                     await Task.Delay(500, token);
                 } while (isLoop && !token.IsCancellationRequested);
             }
             finally
             {
+                // ✨ D. 最终清理与刷新
                 ClearTransients(activeTransients, vps);
                 ToggleEntitiesVisibility(items.Select(i => i.Id), isPersistent);
-                ed.UpdateScreen();
+
+                if (token.IsCancellationRequested || !isLoop)
+                {
+                    // 如果是有遮挡模式，或者用户手动停止，执行强力刷新
+                    if (isObstructed)
+                    {
+                        ed.Regen();
+                    }
+                    else
+                    {
+                        ed.UpdateScreen();
+                    }
+                }
             }
         }
 
@@ -590,9 +610,8 @@ namespace Plugin_AnalysisMaster.Services
         }
 
         /// <summary>
-        /// 批量切换实体可见性。
-        /// 针对图片遮挡修复：在恢复显示(visible=true)时，强制调用 DrawOrderTable 将迹线置顶，
-        /// 确保动画播放完后的迹线交接瞬间不产生“掉入图片下方”的视觉错误。
+        /// 批量切换实体的可见性。
+        /// 改进点：移除内部所有强力刷新指令，使其在循环播放过程中保持静默，避免闪烁。
         /// </summary>
         private static void ToggleEntitiesVisibility(IEnumerable<ObjectId> ids, bool visible)
         {
@@ -603,8 +622,6 @@ namespace Plugin_AnalysisMaster.Services
             using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
             {
                 HashSet<ObjectId> allToToggle = new HashSet<ObjectId>();
-                ObjectIdCollection idsToMoveToTop = new ObjectIdCollection();
-
                 foreach (var id in ids)
                 {
                     if (id.IsNull || !id.IsValid || id.IsErased) continue;
@@ -632,42 +649,19 @@ namespace Plugin_AnalysisMaster.Services
                     try
                     {
                         Entity target = tr.GetObject(tId, OpenMode.ForWrite) as Entity;
-                        if (target != null)
-                        {
-                            target.Visible = visible;
-                            if (visible) idsToMoveToTop.Add(tId);
-                        }
+                        if (target != null) target.Visible = visible;
                     }
                     catch { continue; }
                 }
-
-                // ✨ 动画结束时的置顶逻辑
-                if (visible && idsToMoveToTop.Count > 0)
-                {
-                    var firstEnt = tr.GetObject(idsToMoveToTop[0], OpenMode.ForRead) as Entity;
-                    if (firstEnt != null)
-                    {
-                        BlockTableRecord btr = tr.GetObject(firstEnt.BlockId, OpenMode.ForWrite) as BlockTableRecord;
-                        if (!btr.DrawOrderTableId.IsNull)
-                        {
-                            DrawOrderTable dot = tr.GetObject(btr.DrawOrderTableId, OpenMode.ForWrite) as DrawOrderTable;
-                            dot.MoveToTop(idsToMoveToTop);
-                        }
-                    }
-                }
-
                 tr.Commit();
             }
+            // 仅执行显存刷新，不触发重生成
             Autodesk.AutoCAD.Internal.Utils.FlushGraphics();
         }
 
         /// <summary>
         /// 动线绘制主入口：支持多点连续拾取与自动打组。
-        /// 修改逻辑：将 Editor 对象显式传递给下级渲染方法以支持动画。
-        /// </summary>
-        /// <summary>
-        /// 动线绘制主入口。
-        /// 修改说明：将原有的直接 Add 操作改为调用 jig.AddPoint()，以触发自适应夹点精简算法。
+        /// 修改点：在事务提交前增加了绘图顺序置顶逻辑，确保绘制完后线条立即浮在图片背景上方。
         /// </summary>
         public static void DrawAnalysisLine(Point3dCollection inputPoints, AnalysisStyle style)
         {
@@ -681,17 +675,15 @@ namespace Plugin_AnalysisMaster.Services
                 PromptPointResult ppr = ed.GetPoint(ppo);
                 if (ppr.Status != PromptStatus.OK) return;
 
-                // --- 请替换 GeometryEngine.cs 中 DrawAnalysisLine 的 while 循环 ---
                 var jig = new AnalysisLineJig(ppr.Value, style);
                 while (true)
                 {
                     var res = ed.Drag(jig);
                     if (res.Status == PromptStatus.OK)
                     {
-                        // ✨ 核心修复：调用 AddPoint 而不是 GetPoints().Add()
                         jig.AddPoint(jig.LastPoint);
                     }
-                    else if (res.Status == PromptStatus.None) // 右键或回车确认
+                    else if (res.Status == PromptStatus.None)
                     {
                         jig.AddPoint(jig.LastPoint);
                         break;
@@ -735,9 +727,22 @@ namespace Plugin_AnalysisMaster.Services
                         tr.AddNewlyCreatedDBObject(grp, true);
                         grp.Append(allIds);
                     }
+
+                    // ✨ 核心修复：绘制完成后强制置顶
+                    if (allIds.Count > 0)
+                    {
+                        ObjectId dotId = btr.DrawOrderTableId;
+                        if (!dotId.IsNull)
+                        {
+                            DrawOrderTable dot = tr.GetObject(dotId, OpenMode.ForWrite) as DrawOrderTable;
+                            dot.MoveToTop(allIds);
+                        }
+                    }
+
                     tr.Commit();
                 }
             }
+            Autodesk.AutoCAD.Internal.Utils.FlushGraphics();
         }
         /// <summary>
         /// 渲染路径封装：统一处理修剪、主体渲染和端头渲染。
@@ -1224,9 +1229,8 @@ namespace Plugin_AnalysisMaster.Services
         }
         /// <summary>
         /// 优化后的 AddToDb：实现“高性能打组”与“单指纹写入”
-        /// 彻底解决阵列模式卡顿问题
+        /// 修改点：增加了绘图顺序控制逻辑，确保阵列生成的子元素不被背景图片遮挡。
         /// </summary>
-        // --- 1. 给列表用的（新方法，处理阵列并打组） ---
         public static void AddToDb(List<Entity> entities, AnalysisStyle style, List<Point3d> sampledPoints)
         {
             if (entities == null || entities.Count == 0) return;
@@ -1238,7 +1242,7 @@ namespace Plugin_AnalysisMaster.Services
                 ObjectIdCollection ids = new ObjectIdCollection();
                 foreach (Entity ent in entities)
                 {
-                    if (ent.ObjectId.IsNull) // 只有没加入数据库的才添加
+                    if (ent.ObjectId.IsNull)
                     {
                         btr.AppendEntity(ent);
                         tr.AddNewlyCreatedDBObject(ent, true);
@@ -1256,10 +1260,22 @@ namespace Plugin_AnalysisMaster.Services
                     gp.Append(ids);
                 }
 
+                // ✨ 核心修复：批量入库时执行置顶
+                if (ids.Count > 0)
+                {
+                    ObjectId dotId = btr.DrawOrderTableId;
+                    if (!dotId.IsNull)
+                    {
+                        DrawOrderTable dot = tr.GetObject(dotId, OpenMode.ForWrite) as DrawOrderTable;
+                        dot.MoveToTop(ids);
+                    }
+                }
+
                 // 仅在第一个实体写指纹
                 WriteFingerprint(tr, entities[0], style, sampledPoints);
                 tr.Commit();
             }
+            Autodesk.AutoCAD.Internal.Utils.FlushGraphics();
         }
 
 

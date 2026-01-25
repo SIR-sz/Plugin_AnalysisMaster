@@ -10,7 +10,6 @@
         Deactivated="Window_Deactivated"
         ResizeMode="CanResizeWithGrip">
 
-    
     <Window.Resources>
         <local:IndexConverter x:Key="IndexConverter"/>
         <local:ColorToBrushConverter x:Key="ColorToBrushConverter"/>
@@ -173,7 +172,6 @@
                 </Trigger>
             </Style.Triggers>
         </Style>
-
     </Window.Resources>
 
     <Border Background="#1E1E1E" CornerRadius="12" BorderBrush="#333" BorderThickness="1" 
@@ -211,7 +209,7 @@
             </UniformGrid>
 
             <ListView x:Name="PathListView" Grid.Row="2" SelectionChanged="PathListView_SelectionChanged" 
-          PreviewMouseDown="PathListView_PreviewMouseDown" BorderThickness="1">
+                      PreviewMouseDown="PathListView_PreviewMouseDown" BorderThickness="1">
                 <ListView.View>
                     <GridView>
                         <GridViewColumn Header="顺序" Width="45">
@@ -225,10 +223,10 @@
                             <GridViewColumn.CellTemplate>
                                 <DataTemplate>
                                     <TextBox Text="{Binding GroupNumber, UpdateSourceTrigger=PropertyChanged}" 
-                                 LostFocus="GroupNumber_LostFocus" 
-                                 Style="{StaticResource DarkInputStyle}" 
-                                 Width="30" 
-                                 TextAlignment="Center"/>
+                                             LostFocus="GroupNumber_LostFocus" 
+                                             Style="{StaticResource DarkInputStyle}" 
+                                             Width="30" 
+                                             TextAlignment="Center"/>
                                 </DataTemplate>
                             </GridViewColumn.CellTemplate>
                         </GridViewColumn>
@@ -239,13 +237,13 @@
                                 </DataTemplate>
                             </GridViewColumn.CellTemplate>
                         </GridViewColumn>
-                        
+
                         <GridViewColumn Header="路径描述" Width="140">
                             <GridViewColumn.CellTemplate>
                                 <DataTemplate>
                                     <TextBox Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}" 
-                     Background="Transparent" Foreground="#BBB" BorderThickness="0"
-                     VerticalAlignment="Center" LostFocus="Description_LostFocus"/>
+                                             Background="Transparent" Foreground="#BBB" BorderThickness="0"
+                                             VerticalAlignment="Center" LostFocus="Description_LostFocus"/>
                                 </DataTemplate>
                             </GridViewColumn.CellTemplate>
                         </GridViewColumn>
@@ -254,10 +252,10 @@
                             <GridViewColumn.CellTemplate>
                                 <DataTemplate>
                                     <ComboBox SelectedValue="{Binding LineStyle, UpdateSourceTrigger=PropertyChanged}"
-                      SelectedValuePath="Tag"
-                      Style="{StaticResource DarkComboBoxStyle}"
-                      SelectionChanged="LineStyle_SelectionChanged"
-                      Width="60" Height="22">
+                                              SelectedValuePath="Tag"
+                                              Style="{StaticResource DarkComboBoxStyle}"
+                                              SelectionChanged="LineStyle_SelectionChanged"
+                                              Width="60" Height="22">
                                         <ComboBoxItem Content="实线" Tag="{x:Static models:AnimLineStyle.Solid}" />
                                         <ComboBoxItem Content="虚线" Tag="{x:Static models:AnimLineStyle.Dash}" />
                                     </ComboBox>
@@ -271,31 +269,32 @@
             <StackPanel Grid.Row="3" Margin="0,15,0,15">
                 <DockPanel Margin="0,5">
                     <TextBlock Text="演示加粗: " VerticalAlignment="Center"/>
-                    <TextBox DockPanel.Dock="Right" Text="{Binding ElementName=ThicknessSlider, Path=Value, StringFormat={}{0:F0}}" 
+                    <TextBox DockPanel.Dock="Right" Text="{Binding ElementName=SliderThickness, Path=Value, StringFormat={}{0:F0}}" 
                              Style="{StaticResource DarkInputStyle}" Width="45" Margin="10,0,0,0" TextAlignment="Right"/>
-                    <Slider x:Name="ThicknessSlider" Minimum="0" Maximum="100" Value="2" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center"/>
+                    <Slider x:Name="SliderThickness" Minimum="0" Maximum="100" Value="2" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center"/>
                 </DockPanel>
 
                 <StackPanel Orientation="Horizontal" Margin="0,5,0,10">
-                    <CheckBox x:Name="LoopCheck" Content="循环播放" Foreground="#BBB" VerticalAlignment="Center"/>
-                    <CheckBox x:Name="PersistenceCheck" Content="播放后保留迹线" IsChecked="True" Foreground="#BBB" Margin="25,0,0,0" VerticalAlignment="Center"/>
+                    <CheckBox x:Name="ChkLoop" Content="循环播放" Foreground="#BBB" VerticalAlignment="Center"/>
+                    <CheckBox x:Name="ChkPersistent" Content="播放后保留迹线" IsChecked="True" Foreground="#BBB" Margin="25,0,0,0" VerticalAlignment="Center"/>
+                    <CheckBox x:Name="ChkObstructed" Content="是否有遮挡" Foreground="#BBB" VerticalAlignment="Center" Margin="20,0,0,0" IsChecked="False"/>
                 </StackPanel>
 
                 <DockPanel Margin="0,5">
                     <TextBlock Text="播放速度: " VerticalAlignment="Center"/>
-                    <TextBox DockPanel.Dock="Right" Text="{Binding ElementName=SpeedSlider, Path=Value, StringFormat={}{0:F1}x}" 
-             Style="{StaticResource DarkInputStyle}" Width="45" Margin="10,0,0,0" TextAlignment="Right"/>
-                    <Slider x:Name="SpeedSlider" Minimum="0.1" Maximum="10" Value="1" TickFrequency="0.1" IsSnapToTickEnabled="True" VerticalAlignment="Center"/>
+                    <TextBox DockPanel.Dock="Right" Text="{Binding ElementName=SliderSpeed, Path=Value, StringFormat={}{0:F1}x}" 
+                             Style="{StaticResource DarkInputStyle}" Width="45" Margin="10,0,0,0" TextAlignment="Right"/>
+                    <Slider x:Name="SliderSpeed" Minimum="0.1" Maximum="10" Value="1" TickFrequency="0.1" IsSnapToTickEnabled="True" VerticalAlignment="Center"/>
                 </DockPanel>
             </StackPanel>
 
             <UniformGrid Grid.Row="4" Columns="3" Margin="0,5">
                 <Button x:Name="BtnPlay" Content="▶ 播放" Height="38" Margin="0,0,5,0" Click="BtnPlay_Click" 
-            Background="#4CAF50" FontWeight="Bold" Style="{StaticResource DarkButtonStyle}"/>
+                        Background="#4CAF50" FontWeight="Bold" Style="{StaticResource DarkButtonStyle}"/>
                 <Button x:Name="BtnLegend" Content="📊 生成图例" Height="38" Margin="0,0,5,0" Click="BtnLegend_Click" 
-            Background="#9C27B0" FontWeight="Bold" Style="{StaticResource DarkButtonStyle}"/>
+                        Background="#9C27B0" FontWeight="Bold" Style="{StaticResource DarkButtonStyle}"/>
                 <Button x:Name="BtnStop" Content="■ 停止" Height="38" Click="BtnStop_Click" 
-            Background="#F44336" FontWeight="Bold" Style="{StaticResource DarkButtonStyle}"/>
+                        Background="#F44336" FontWeight="Bold" Style="{StaticResource DarkButtonStyle}"/>
             </UniformGrid>
         </Grid>
     </Border>
