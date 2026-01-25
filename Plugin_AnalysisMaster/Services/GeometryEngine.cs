@@ -33,8 +33,9 @@ namespace Plugin_AnalysisMaster.Services
         private const string AnimSequenceKey = "ANALYSIS_ANIM_SEQUENCE";
 
         /// <summary>
-        /// 将动画序列保存到 DWG 的 NOD 字典中。
-        /// 改进点：确保每一个路径条目固定占用 3 个 TypedValue 位置，方便读取。
+        /// 将当前动画序列保存到 DWG。
+        /// 修改点：增加了 Name (路径描述) 的保存，确保用户自定义的描述能够持久化。
+        /// 保存顺序：Handle, GroupNumber, LineStyle, Name
         /// </summary>
         public static void SaveSequenceToDwg(IEnumerable<AnimPathItem> items)
         {
@@ -45,16 +46,15 @@ namespace Plugin_AnalysisMaster.Services
             using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
             {
                 DBDictionary nod = (DBDictionary)tr.GetObject(doc.Database.NamedObjectsDictionaryId, OpenMode.ForWrite);
-
                 Xrecord xRec = new Xrecord();
                 ResultBuffer rb = new ResultBuffer();
 
                 foreach (var item in items)
                 {
-                    // 顺序：1.句柄(Text) 2.组号(Int32) 3.线型(Int32)
                     rb.Add(new TypedValue((int)DxfCode.Text, item.Id.Handle.ToString()));
                     rb.Add(new TypedValue((int)DxfCode.Int32, item.GroupNumber));
                     rb.Add(new TypedValue((int)DxfCode.Int32, (int)item.LineStyle));
+                    rb.Add(new TypedValue((int)DxfCode.Text, item.Name ?? "")); // ✨ 新增：保存自定义名称
                 }
 
                 xRec.Data = rb;
@@ -69,8 +69,8 @@ namespace Plugin_AnalysisMaster.Services
         /// 修改说明：将原本空的注释块替换为真实的句柄找回逻辑。
         /// </summary>
         /// <summary>
-        /// 从 DWG 中读取持久化的动画序列。
-        /// 改进点：严格按 3 位步进读取，并对缺失线型的数据（旧数据）进行兼容处理。
+        /// 从 DWG 加载播放序列。
+        /// 修改点：增加了 Name (路径描述) 的读取逻辑，步进改为 4。
         /// </summary>
         public static List<AnimPathItem> LoadSequenceFromDwg()
         {
@@ -89,20 +89,15 @@ namespace Plugin_AnalysisMaster.Services
                     if (rb == null) return items;
                     TypedValue[] arr = rb.AsArray();
 
-                    // 步长为 3：句柄, 组号, 线型
-                    for (int i = 0; i < arr.Length; i += 3)
+                    // 步长改为 4：Handle, Group, Style, Name
+                    for (int i = 0; i < arr.Length; i += 4)
                     {
                         if (i + 1 >= arr.Length) break;
 
                         string handleStr = arr[i].Value.ToString();
                         int groupNum = (int)arr[i + 1].Value;
-
-                        // 线型属性兼容性处理：如果数据长度不足 3 位则是旧数据，默认为实线
-                        AnimLineStyle lineStyle = AnimLineStyle.Solid;
-                        if (i + 2 < arr.Length && arr[i + 2].TypeCode == (int)DxfCode.Int32)
-                        {
-                            lineStyle = (AnimLineStyle)(int)arr[i + 2].Value;
-                        }
+                        int styleVal = (i + 2 < arr.Length) ? (int)arr[i + 2].Value : 0;
+                        string customName = (i + 3 < arr.Length) ? arr[i + 3].Value.ToString() : ""; // ✨ 新增：读取自定义名称
 
                         if (doc.Database.TryGetObjectId(new Handle(Convert.ToInt64(handleStr, 16)), out ObjectId id))
                         {
@@ -112,7 +107,8 @@ namespace Plugin_AnalysisMaster.Services
                                 {
                                     Id = id,
                                     GroupNumber = groupNum,
-                                    LineStyle = lineStyle
+                                    LineStyle = (AnimLineStyle)styleVal,
+                                    Name = customName // ✨ 还原名称
                                 });
                             }
                         }
@@ -121,6 +117,109 @@ namespace Plugin_AnalysisMaster.Services
                 tr.Commit();
             }
             return items;
+        }
+        /// <summary>
+        /// 专门为动画序列生成图例。
+        /// 改进点：
+        /// 1. 解析每一条路径关联实体的“指纹”，还原其真实的样式（阵列图块、颜色、箭头等）。
+        /// 2. 调用 RenderPath 核心引擎进行渲染，确保图例示意线与图面效果完全一致。
+        /// 3. 使用用户在动画列表中自定义的 Name 属性作为图例描述文字。
+        /// </summary>
+        public static void GenerateAnimLegend(List<AnimPathItem> animItems)
+        {
+            if (animItems == null || animItems.Count == 0) return;
+
+            Document doc = Application.DocumentManager.MdiActiveDocument;
+            Editor ed = doc.Editor;
+            Database db = doc.Database;
+
+            PromptPointResult ppr = ed.GetPoint("\n请指定动画图例放置起点: ");
+            if (ppr.Status != PromptStatus.OK) return;
+
+            using (DocumentLock dl = doc.LockDocument())
+            using (Transaction tr = db.TransactionManager.StartTransaction())
+            {
+                BlockTableRecord btr = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
+
+                double rowHeight = 15.0;
+                double lineLength = 40.0;
+                Point3d basePt = ppr.Value;
+                ObjectId dashLtId = EnsureLinetypeLoaded(doc, "DASHED");
+
+                for (int i = 0; i < animItems.Count; i++)
+                {
+                    var item = animItems[i];
+
+                    // 1. 获取并解析实体的样式指纹
+                    Entity ent = tr.GetObject(item.Id, OpenMode.ForRead) as Entity;
+                    if (ent == null || ent.ExtensionDictionary.IsNull) continue;
+
+                    DBDictionary dict = tr.GetObject(ent.ExtensionDictionary, OpenMode.ForRead) as DBDictionary;
+                    if (!dict.Contains("ANALYSIS_ANIM_DATA")) continue;
+
+                    Xrecord xRec = tr.GetObject(dict.GetAt("ANALYSIS_ANIM_DATA"), OpenMode.ForRead) as Xrecord;
+                    AnalysisStyle style = null;
+                    using (ResultBuffer rb = xRec.Data)
+                    {
+                        if (rb == null) continue;
+                        string fingerprint = rb.AsArray()[0].Value.ToString();
+                        string[] parts = fingerprint.Split('|');
+                        if (parts.Length < 8) continue;
+
+                        style = new AnalysisStyle();
+                        style.PathType = (PathCategory)Enum.Parse(typeof(PathCategory), parts[0]);
+                        style.IsCurved = bool.Parse(parts[1]);
+                        style.SelectedBlockName = parts[2];
+                        style.SelectedBlockName2 = parts[3];
+                        style.IsComposite = bool.Parse(parts[4]);
+                        style.MainColor = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(parts[5]);
+                        style.StartArrowType = parts[6];
+                        style.EndArrowType = parts[7];
+
+                        style.ArrowSize = 1.0;
+                        style.PatternScale = 1.0;
+                        style.CapIndent = 2.0;
+                        style.TargetLayer = ent.Layer;
+                    }
+
+                    // 2. 绘制示意图样（利用 RenderPath 还原真实样式）
+                    Point3d start = new Point3d(basePt.X, basePt.Y - (i * rowHeight), 0);
+                    Point3d end = new Point3d(basePt.X + lineLength, start.Y, 0);
+
+                    using (Line samplePath = new Line(start, end))
+                    {
+                        ObjectIdCollection ids = new ObjectIdCollection();
+                        RenderPath(btr, tr, ed, samplePath, style, ids);
+
+                        // 如果该路径设置为虚线动画，则将生成的示意线条也设为虚线
+                        if (item.LineStyle == AnimLineStyle.Dash && style.PathType == PathCategory.Solid)
+                        {
+                            foreach (ObjectId id in ids)
+                            {
+                                Entity legendEnt = tr.GetObject(id, OpenMode.ForWrite) as Entity;
+                                if (legendEnt is Polyline pl)
+                                {
+                                    pl.LinetypeId = dashLtId;
+                                    pl.LinetypeScale = 1.0;
+                                }
+                            }
+                        }
+                    }
+
+                    // 3. 绘制描述文字（优先使用用户自定义的 item.Name）
+                    MText mt = new MText();
+                    mt.Contents = string.IsNullOrEmpty(item.Name) ? $"分析路径 {i + 1}" : item.Name;
+                    mt.Location = new Point3d(basePt.X + lineLength + 3, start.Y, 0);
+                    mt.Height = 3.0;
+                    mt.Attachment = AttachmentPoint.MiddleLeft;
+                    mt.Color = Autodesk.AutoCAD.Colors.Color.FromColorIndex(ColorMethod.ByAci, 7);
+
+                    btr.AppendEntity(mt);
+                    tr.AddNewlyCreatedDBObject(mt, true);
+                }
+                tr.Commit();
+            }
+            ed.WriteMessage($"\n[成功] 动画图例已生成。");
         }
         /// <summary>
         /// 更新图面上的路径编号标签
@@ -491,16 +590,21 @@ namespace Plugin_AnalysisMaster.Services
         }
 
         /// <summary>
-        /// 批量切换实体可见性（增强版：增加安全性校验，防止 eInvalidInput）
+        /// 批量切换实体可见性。
+        /// 针对图片遮挡修复：在恢复显示(visible=true)时，强制调用 DrawOrderTable 将迹线置顶，
+        /// 确保动画播放完后的迹线交接瞬间不产生“掉入图片下方”的视觉错误。
         /// </summary>
-       // 辅助：支持 Group 自动隐藏的可见性控制
         private static void ToggleEntitiesVisibility(IEnumerable<ObjectId> ids, bool visible)
         {
             Document doc = Application.DocumentManager.MdiActiveDocument;
+            if (doc == null) return;
+
             using (doc.LockDocument())
             using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
             {
                 HashSet<ObjectId> allToToggle = new HashSet<ObjectId>();
+                ObjectIdCollection idsToMoveToTop = new ObjectIdCollection();
+
                 foreach (var id in ids)
                 {
                     if (id.IsNull || !id.IsValid || id.IsErased) continue;
@@ -522,19 +626,40 @@ namespace Plugin_AnalysisMaster.Services
                         }
                     }
                 }
+
                 foreach (var tId in allToToggle)
                 {
                     try
                     {
                         Entity target = tr.GetObject(tId, OpenMode.ForWrite) as Entity;
-                        if (target != null) target.Visible = visible;
+                        if (target != null)
+                        {
+                            target.Visible = visible;
+                            if (visible) idsToMoveToTop.Add(tId);
+                        }
                     }
                     catch { continue; }
                 }
+
+                // ✨ 动画结束时的置顶逻辑
+                if (visible && idsToMoveToTop.Count > 0)
+                {
+                    var firstEnt = tr.GetObject(idsToMoveToTop[0], OpenMode.ForRead) as Entity;
+                    if (firstEnt != null)
+                    {
+                        BlockTableRecord btr = tr.GetObject(firstEnt.BlockId, OpenMode.ForWrite) as BlockTableRecord;
+                        if (!btr.DrawOrderTableId.IsNull)
+                        {
+                            DrawOrderTable dot = tr.GetObject(btr.DrawOrderTableId, OpenMode.ForWrite) as DrawOrderTable;
+                            dot.MoveToTop(idsToMoveToTop);
+                        }
+                    }
+                }
+
                 tr.Commit();
             }
+            Autodesk.AutoCAD.Internal.Utils.FlushGraphics();
         }
-
 
         /// <summary>
         /// 动线绘制主入口：支持多点连续拾取与自动打组。

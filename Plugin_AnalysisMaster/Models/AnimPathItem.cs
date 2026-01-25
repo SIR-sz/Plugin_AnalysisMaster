@@ -16,11 +16,18 @@ namespace Plugin_AnalysisMaster.Models
 
     /// <summary>
     /// 动画路径条目模型
+    /// 改进点：确保 Name 属性支持属性变更通知，以便在 UI 上的 TextBox 编辑时能正确同步。
     /// </summary>
     public class AnimPathItem : INotifyPropertyChanged
     {
         public ObjectId Id { get; set; }
-        public string Name { get; set; }
+
+        private string _name;
+        public string Name
+        {
+            get => _name;
+            set { _name = value; OnPropertyChanged(nameof(Name)); }
+        }
 
         private int _groupNumber = 1;
         public int GroupNumber
@@ -30,9 +37,6 @@ namespace Plugin_AnalysisMaster.Models
         }
 
         private AnimLineStyle _lineStyle = AnimLineStyle.Solid;
-        /// <summary>
-        /// 控制动画生长时的线型（实线/虚线）
-        /// </summary>
         public AnimLineStyle LineStyle
         {
             get => _lineStyle;
@@ -40,7 +44,6 @@ namespace Plugin_AnalysisMaster.Models
         }
 
         public System.Windows.Media.Color PathColor { get; set; }
-        public double SamplingInterval { get; set; }
 
         public event PropertyChangedEventHandler PropertyChanged;
         protected void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));

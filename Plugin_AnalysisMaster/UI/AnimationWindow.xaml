@@ -239,7 +239,16 @@
                                 </DataTemplate>
                             </GridViewColumn.CellTemplate>
                         </GridViewColumn>
-                        <GridViewColumn Header="路径描述" DisplayMemberBinding="{Binding Name}" Width="130"/>
+                        
+                        <GridViewColumn Header="路径描述" Width="140">
+                            <GridViewColumn.CellTemplate>
+                                <DataTemplate>
+                                    <TextBox Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}" 
+                     Background="Transparent" Foreground="#BBB" BorderThickness="0"
+                     VerticalAlignment="Center" LostFocus="Description_LostFocus"/>
+                                </DataTemplate>
+                            </GridViewColumn.CellTemplate>
+                        </GridViewColumn>
 
                         <GridViewColumn Header="线型" Width="70">
                             <GridViewColumn.CellTemplate>
@@ -280,11 +289,13 @@
                 </DockPanel>
             </StackPanel>
 
-            <UniformGrid Grid.Row="4" Columns="2" Margin="0,5">
-                <Button x:Name="BtnPlay" Content="▶ 开始播放" Height="38" Margin="0,0,5,0" Click="BtnPlay_Click" 
-                        Background="#4CAF50" FontWeight="Bold" Style="{StaticResource DarkButtonStyle}"/>
+            <UniformGrid Grid.Row="4" Columns="3" Margin="0,5">
+                <Button x:Name="BtnPlay" Content="▶ 播放" Height="38" Margin="0,0,5,0" Click="BtnPlay_Click" 
+            Background="#4CAF50" FontWeight="Bold" Style="{StaticResource DarkButtonStyle}"/>
+                <Button x:Name="BtnLegend" Content="📊 生成图例" Height="38" Margin="0,0,5,0" Click="BtnLegend_Click" 
+            Background="#9C27B0" FontWeight="Bold" Style="{StaticResource DarkButtonStyle}"/>
                 <Button x:Name="BtnStop" Content="■ 停止" Height="38" Click="BtnStop_Click" 
-                        Background="#F44336" FontWeight="Bold" Style="{StaticResource DarkButtonStyle}"/>
+            Background="#F44336" FontWeight="Bold" Style="{StaticResource DarkButtonStyle}"/>
             </UniformGrid>
         </Grid>
     </Border>

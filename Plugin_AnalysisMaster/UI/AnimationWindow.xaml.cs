@@ -150,6 +150,27 @@ namespace Plugin_AnalysisMaster.UI
             }
         }
         /// <summary>
+        /// 响应动画图例生成按钮点击。
+        /// </summary>
+        private void BtnLegend_Click(object sender, RoutedEventArgs e)
+        {
+            if (_pathList != null && _pathList.Count > 0)
+            {
+                GeometryEngine.GenerateAnimLegend(_pathList.ToList());
+            }
+        }
+
+        /// <summary>
+        /// 当路径描述编辑框失去焦点时，立即保存修改到图纸。
+        /// </summary>
+        private void Description_LostFocus(object sender, RoutedEventArgs e)
+        {
+            if (this.IsLoaded && _pathList != null)
+            {
+                GeometryEngine.SaveSequenceToDwg(_pathList);
+            }
+        }
+        /// <summary>
         /// 响应线型下拉框变更事件。
         /// 作用：当用户在界面修改某条路径的实虚线设置时，立即触发持久化保存，防止数据丢失。
         /// </summary>
