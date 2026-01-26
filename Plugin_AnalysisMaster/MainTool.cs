@@ -1,95 +1,179 @@
 ﻿using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.Runtime;
-using CadAtlasManager.Core; // 引用接口定义库
-using Plugin_AnalysisMaster.UI; // 引用 UI 命名空间
+using CadAtlasManager.Core;
+using Plugin_AnalysisMaster.UI;
 using System;
+using System.IO;
+using System.Reflection;
+using System.Windows.Forms;
 using System.Windows.Media;
+using VMProtect;
+using Application = Autodesk.AutoCAD.ApplicationServices.Application;
 
-// [必选] 注册命令类，确保 AutoCAD 命令行能识别 [CommandMethod]
+[assembly: ExtensionApplication(typeof(Plugin_AnalysisMaster.MainTool))]
 [assembly: CommandClass(typeof(Plugin_AnalysisMaster.MainTool))]
 
 namespace Plugin_AnalysisMaster
 {
-    /// <summary>
-    /// 动态曲线助手插件入口
-    /// </summary>
-    public class MainTool : ICadTool
+    public class MainTool : ICadTool, IExtensionApplication
     {
         private static AnimationWindow _animWindow = null;
-        // 授权标记：仅在主程序点击 Execute 或 Debug/Standalone 模式下开启
-        private static bool _isAuthorized = false;
+        private static System.Windows.Forms.Timer _heartbeatTimer = null;
+
+        #region --- IExtensionApplication 接口实现 (改为静默加载) ---
+
+        public void Initialize()
+        {
+            // ✨ 移除此处 CheckLicense 调用，实现 CAD 启动时不弹出激活窗体
+        }
+
+        public void Terminate()
+        {
+            StopHeartbeat();
+        }
+
+        #endregion
 
         #region --- ICadTool 接口实现 ---
 
-        public string ToolName => "动态曲线助手"; // 显示在主面板上的名称
-        public string IconCode => "\uE81C";      // 使用路径图标
+        public string ToolName => "动态曲线助手";
+        public string IconCode => "\uE81C";
         public string Description => "专业级动线、箭头与分析线绘制工具";
         public string Category { get; set; } = "绘图增强";
-
-        [CommandMethod("OpenAnimationManager")]
-        public void OpenAnimationManager()
-        {
-            // 如果窗口不存在或已被完全销毁，则新建
-            if (_animWindow == null || !_animWindow.IsLoaded)
-            {
-                _animWindow = new AnimationWindow();
-            }
-
-            // 显示窗口
-            Application.ShowModelessWindow(_animWindow);
-        }
-        // 主程序会自动寻找同名 PNG 并填充此属性
         public ImageSource ToolPreview { get; set; }
 
         public bool VerifyHost(Guid hostGuid)
         {
-            // 严格比对主程序身份暗号
             return hostGuid == new Guid("A7F3E2B1-4D5E-4B8C-9F0A-1C2B3D4E5F6B");
         }
 
         public void Execute()
         {
-            // 通过主程序点击，视为授权成功
-            _isAuthorized = true;
-
-            // 启动 UI 界面
-            MainControlWindow.ShowTool();
+            // ✨ 第一次点击执行时检测授权
+            if (!CheckLicense()) return;
+            ShowUIInternal();
         }
 
         #endregion
 
-        #region --- 命令行入口 ---
+        #region --- 授权验证核心逻辑 (参考 CadAtlasManager 布局) ---
+
+        [VMProtect.Begin]
+        public static bool CheckLicense()
+        {
+            int status = (int)VMProtect.SDK.GetSerialNumberState();
+            if (status == 0) return true;
+
+            try
+            {
+                string dllPath = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
+                string licPath = Path.Combine(dllPath, "key.lic");
+                if (File.Exists(licPath))
+                {
+                    string cleanKey = File.ReadAllText(licPath).Trim();
+                    if ((int)VMProtect.SDK.SetSerialNumber(cleanKey) == 0) return true;
+                }
+            }
+            catch { }
+
+            string hwid = VMProtect.SDK.GetCurrentHWID();
+            string msg = (status == 3) ? "授权时间/单次运行时间已到期。" : "未检测到有效授权，请激活后使用。";
+
+            return ShowActivationDialog(msg, hwid);
+        }
+
+        [VMProtect.Begin]
+        private static bool ShowActivationDialog(string message, string hwid)
+        {
+            bool isSuccess = false;
+            using (Form form = new Form())
+            {
+                // ✨ 严格参考 CadAtlasManager 的窗体参数
+                form.Text = "动态曲线助手 - 软件激活";
+                form.Size = new System.Drawing.Size(480, 450);
+                form.StartPosition = FormStartPosition.CenterScreen;
+                form.FormBorderStyle = FormBorderStyle.FixedDialog;
+                form.MaximizeBox = false; form.MinimizeBox = false;
+                form.TopMost = true;
+
+                Label lblMsg = new Label() { Text = message + "\n请输入注册码激活系统：", Dock = DockStyle.Top, Height = 60, Padding = new Padding(10), ForeColor = System.Drawing.Color.Red, Font = new System.Drawing.Font("微软雅黑", 9F) };
+
+                // ✨ 修复复制按钮变形：使用固定高度并分层 Dock
+                GroupBox grpHwid = new GroupBox() { Text = "1. 复制机器码发给管理员", Dock = DockStyle.Top, Height = 80, Padding = new Padding(5) };
+                System.Windows.Forms.TextBox txtHwid = new System.Windows.Forms.TextBox() { Text = hwid, Dock = DockStyle.Top, ReadOnly = true, Font = new System.Drawing.Font("Consolas", 10F) };
+                System.Windows.Forms.Button btnCopy = new System.Windows.Forms.Button() { Text = "点击复制机器码", Dock = DockStyle.Bottom, Height = 28 };
+                btnCopy.Click += (s, e) => { Clipboard.SetText(hwid); MessageBox.Show("机器码已复制到剪贴板！"); };
+                grpHwid.Controls.Add(btnCopy); grpHwid.Controls.Add(txtHwid);
+
+                GroupBox grpInput = new GroupBox() { Text = "2. 输入注册码", Dock = DockStyle.Top, Height = 180, Padding = new Padding(5) };
+                System.Windows.Forms.TextBox txtKey = new System.Windows.Forms.TextBox() { Multiline = true, Dock = DockStyle.Fill, ScrollBars = ScrollBars.Vertical, Font = new System.Drawing.Font("Consolas", 9F) };
+                grpInput.Controls.Add(txtKey);
+
+                System.Windows.Forms.Button btnActivate = new System.Windows.Forms.Button() { Text = "立即激活系统", Dock = DockStyle.Bottom, Height = 50, Font = new System.Drawing.Font("微软雅黑", 10F, System.Drawing.FontStyle.Bold) };
+                btnActivate.Click += (s, e) =>
+                {
+                    string keyInput = txtKey.Text.Trim();
+                    if ((int)VMProtect.SDK.SetSerialNumber(keyInput) == 0)
+                    {
+                        try { File.WriteAllText(Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location), "key.lic"), keyInput); } catch { }
+                        MessageBox.Show("激活成功！");
+                        isSuccess = true;
+                        form.Close();
+                    }
+                    else MessageBox.Show("注册码无效！");
+                };
+
+                form.Controls.Add(grpInput);
+                form.Controls.Add(grpHwid);
+                form.Controls.Add(lblMsg);
+                form.Controls.Add(btnActivate);
+                form.ShowDialog();
+            }
+            return isSuccess;
+        }
+
+        private static void StartHeartbeat()
+        {
+            if (_heartbeatTimer != null) return;
+            _heartbeatTimer = new System.Windows.Forms.Timer { Interval = 60000 }; // 1 分钟心跳
+            _heartbeatTimer.Tick += (s, e) =>
+            {
+                if (VMProtect.SDK.GetSerialNumberState() != 0)
+                {
+                    StopHeartbeat();
+                    MainControlWindow.CloseTool();
+                    CheckLicense();
+                }
+            };
+            _heartbeatTimer.Start();
+        }
+
+        private static void StopHeartbeat()
+        {
+            _heartbeatTimer?.Stop();
+            _heartbeatTimer?.Dispose();
+            _heartbeatTimer = null;
+        }
+
+        #endregion
+
+        #region --- 启动逻辑 ---
+
+        private static void ShowUIInternal()
+        {
+            MainControlWindow.ShowTool();
+            StartHeartbeat();
+        }
 
         [CommandMethod("DRAW_ANALYSIS")]
-        [CommandMethod("DXFX")] // 简写命令
+        [CommandMethod("DXFX")]
         public void MainCommandEntry()
         {
-#if STANDALONE || DEBUG
-            // 调试或独立模式：直接运行
-            ShowUIInternal();
-#else
-            // Release 模式：检查授权
-            if (_isAuthorized)
+            // ✨ 输入命令时才弹出激活界面
+            if (CheckLicense())
             {
                 ShowUIInternal();
             }
-            else
-            {
-                var doc = Application.DocumentManager.MdiActiveDocument;
-                doc?.Editor.WriteMessage("\n[错误] 该插件为 智汇CAD全流程管理系统 授权版，请从主程序面板启动。");
-            }
-#endif
-        }
-
-        private void ShowUIInternal()
-        {
-            var doc = Application.DocumentManager.MdiActiveDocument;
-            if (doc == null) return;
-
-            doc.Editor.WriteMessage($"\n[{ToolName}] 正在启动界面...");
-
-            // 调用 UI 层的静态启动方法
-            MainControlWindow.ShowTool();
         }
 
         #endregion

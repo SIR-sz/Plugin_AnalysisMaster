@@ -29,6 +29,41 @@ namespace Plugin_AnalysisMaster.UI
         private static AnalysisStyle _currentStyle = new AnalysisStyle();
         private static MainControlWindow _instance;
 
+        /// <summary>
+        /// 静态关闭方法：由 MainTool 监听到授权过期时强制调用
+        /// </summary>
+        public static void CloseTool()
+        {
+            // 切换到 UI 线程执行关闭逻辑
+            if (_instance != null)
+            {
+                if (_instance.CheckAccess())
+                {
+                    DoClose();
+                }
+                else
+                {
+                    _instance.Dispatcher.Invoke(DoClose);
+                }
+            }
+        }
+
+        private static void DoClose()
+        {
+            if (_instance != null)
+            {
+                try
+                {
+                    _instance.Close();
+                }
+                catch { }
+                finally
+                {
+                    _instance = null; // 彻底释放静态引用，确保下次 ShowTool 能重新创建
+                }
+            }
+        }
+
         [DllImport("gdi32.dll")]
         public static extern bool DeleteObject(IntPtr hObject);
 
@@ -51,15 +86,19 @@ namespace Plugin_AnalysisMaster.UI
         {
             InitializeComponent();
 
-            // 1. 先加载资源库（填充下拉框 Items）
+            // 确保实例被正确追踪
+            _instance = this;
+
+            // 注册关闭事件：当用户手动关闭窗口时，也要清理静态引用
+            this.Closed += (s, e) => { _instance = null; };
+
+            // 1. 加载资源库
             LoadPatternLibrary();
 
-            // 2. 注册加载事件：回填数据并刷新预览
+            // 2. 注册加载事件
             this.Loaded += (s, e) =>
             {
-                // 从内存回填到 UI
                 ApplyStyleToUI();
-                // 刷新一次预览图
                 UpdatePreview();
             };
         }
@@ -629,6 +668,15 @@ namespace Plugin_AnalysisMaster.UI
 
         private void StartDraw_Click(object sender, RoutedEventArgs e)
         {
+            // ✨ [保险措施] 点击绘图按钮时，立即强制检测授权
+            // 即使心跳包还没检测到过期，这里也会同步拦截
+            if (!Plugin_AnalysisMaster.MainTool.CheckLicense())
+            {
+                // 授权失效，直接关掉面板并退出
+                this.Close();
+                return;
+            }
+
             // 调用统一的同步方法
             SyncStyleFromUI();
 
@@ -636,7 +684,6 @@ namespace Plugin_AnalysisMaster.UI
             this.Hide();
             try
             {
-                // 执行绘图引擎逻辑
                 GeometryEngine.DrawAnalysisLine(null, _currentStyle);
             }
             catch (System.Exception ex)
@@ -646,7 +693,6 @@ namespace Plugin_AnalysisMaster.UI
             finally
             {
                 this.Show();
-                // 刷新界面预览
                 UpdatePreview();
             }
         }
