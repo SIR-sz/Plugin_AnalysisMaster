@@ -147,7 +147,7 @@ namespace Plugin_AnalysisMaster.Services
                 double rowHeight = 15.0;
                 double lineLength = 40.0;
                 Point3d basePt = ppr.Value;
-                ObjectId dashLtId = EnsureLinetypeLoaded(doc, "DASHED");
+                ObjectId dashLtId = EnsureLinetypeLoaded(doc, "ANALYSIS_DASH");
 
                 for (int i = 0; i < animItems.Count; i++)
                 {
@@ -382,7 +382,7 @@ namespace Plugin_AnalysisMaster.Services
 
             if (allData.Count == 0) return;
 
-            ObjectId dashLtId = EnsureLinetypeLoaded(doc, "DASHED");
+            ObjectId dashLtId = EnsureLinetypeLoaded(doc, "ANALYSIS_DASH");
             List<Polyline> activeTransients = new List<Polyline>();
             IntegerCollection vps = new IntegerCollection();
 
@@ -1574,7 +1574,7 @@ namespace Plugin_AnalysisMaster.Services
         /// 改进点：增加了事务提交逻辑和多线型文件搜索，确保加载后立即生效。
         /// </summary>
         /// <summary>
-        /// 确保 CAD 数据库中已加载指定的线型（如 DASHED）。
+        /// 确保 CAD 数据库中已加载指定的线型（如 ANALYSIS_DASH）。
         /// 改进点：
         /// 1. 增加了 doc.LockDocument() 逻辑，彻底解决异步调用下的 eLockViolation 错误。
         /// 2. 优化了路径获取逻辑，确保在各种安装环境下都能定位到 Assets 文件夹。
